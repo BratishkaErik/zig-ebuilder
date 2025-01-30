@@ -28,6 +28,7 @@ pub const empty: Dependencies = .{
 };
 
 pub fn deinit(self: Dependencies, allocator: std.mem.Allocator) void {
+    allocator.free(self.root_package_name);
     for (self.tarball) |tarball| {
         allocator.free(tarball.name);
         allocator.free(tarball.url);
@@ -395,7 +396,7 @@ pub fn collect(
     }
 
     return .{
-        .root_package_name = project_build_zig_zon_struct.name,
+        .root_package_name = try gpa.dupe(u8, project_build_zig_zon_struct.name),
         .tarball = try array.toOwnedSlice(gpa),
         .git_commit = try packaging_needed.toOwnedSlice(gpa),
     };
