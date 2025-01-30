@@ -7,8 +7,8 @@
 
     .dependencies = .{
         .mustache = .{
-            .url = "git+https://github.com/batiati/mustache-zig?ref=master#822933184fb0cbc8e692e9c73618deb2b0b8108c",
-            .hash = "122008747b05328191a1b3c2a83520b82f11e87ae12e2cc8f92305792203802a0b02",
+            .url = "git+https://github.com/batiati/mustache-zig?ref=master#7046270199f68eae32a9e79f3933088621f27d24",
+            .hash = "12201f5bda90b5de1915dc60da9cf1cd846d79a36c2e1313aa467462fa985f117bcc",
         },
     },
     .paths = .{
