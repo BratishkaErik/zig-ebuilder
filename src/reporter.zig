@@ -122,6 +122,8 @@ pub fn collect(
             } else if (std.mem.eql(u8, option.name, "cpu")) {
                 options_status.missing_options.toggle(.cpu);
                 continue;
+            } else if (std.mem.eql(u8, option.name, "ofmt")) {
+                continue; // Re-check after 0.14 is released.
             }
 
             if (std.mem.eql(u8, option.name, "optimize")) {
