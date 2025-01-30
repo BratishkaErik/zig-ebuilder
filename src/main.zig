@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 const std = @import("std");
-const mustache = @import("mustache");
+const ztl = @import("ztl");
 
 const BuildZigZon = @import("BuildZigZon.zig");
 const Dependencies = @import("Dependencies.zig");
@@ -247,26 +247,25 @@ pub fn main() !void {
             return error.InvalidTemplate;
         }
     else
-        generator_setup.templates.dir.readFileAlloc(gpa, "gentoo.ebuild.mustache", 1 * 1024 * 1024) catch |err| {
+        generator_setup.templates.dir.readFileAlloc(gpa, "gentoo.ebuild.ztl", 1 * 1024 * 1024) catch |err| {
             file_searching_events.err(@src(), "Error when searching default \"gentoo\" template: \"{s}\".", .{@errorName(err)});
 
             return error.InvalidTemplate;
         };
     defer gpa.free(template_text);
 
-    const template = switch (try mustache.parseText(gpa, template_text, .{}, .{ .copy_strings = false })) {
-        .parse_error => |detail| {
-            file_searching_events.err(@src(), "Error when loading file: {s} caused by \"{s}\" at {d}:{d}.", .{
-                @errorName(detail.parse_error),
-                if (optional_custom_template_path) |custom_template_path| custom_template_path else "(default template)",
-                detail.lin,
-                detail.col,
-            });
-            return error.InvalidTemplate;
-        },
-        .success => |template| template,
+    var template: ztl.Template(void) = .init(gpa, {});
+    defer template.deinit();
+
+    var template_errors: ztl.CompileErrorReport = .{};
+    template.compile(template_text, .{ .error_report = &template_errors }) catch |err| {
+        file_searching_events.err(@src(), "Error when loading file: {s} caused by \"{s}\": {}", .{
+            @errorName(err),
+            if (optional_custom_template_path) |custom_template_path| custom_template_path else "(default template)",
+            template_errors,
+        });
+        return error.InvalidTemplate;
     };
-    defer template.deinit(gpa);
 
     const dependencies: Dependencies = if (global.fetch_mode != .skip) fetch: {
         const build_zig_zon_loc = if (project_setup.build_zig_zon) |build_zig_zon| build_zig_zon else {
@@ -344,24 +343,29 @@ pub fn main() !void {
             const time: Timestamp = .now();
             break :year time.year;
         },
-        .zbs = .{
-            .slot = switch (zig_process.version.kind) {
-                .live => "9999",
-                .release => try std.fmt.allocPrint(arena, "{d}.{d}", .{ zig_process.version.sem_ver.major, zig_process.version.sem_ver.minor }),
-            },
-            .has_dependencies = @max(dependencies.tarball.len, dependencies.git_commit.len) > 0,
-            .has_system_dependencies = @max(report.system_integrations.len, report.system_libraries.len) > 0,
-            .has_system_integrations = report.system_integrations.len > 0,
-            .has_user_options = report.user_options.len > 0,
-            .dependencies = dependencies,
-            .tarball_tarball = optional_tarball_tarball_path,
-            .report = report,
+        .zig_slot = switch (zig_process.version.kind) {
+            .live => "9999",
+            .release => try std.fmt.allocPrint(arena, "{d}.{d}", .{ zig_process.version.sem_ver.major, zig_process.version.sem_ver.minor }),
         },
+        .dependencies = dependencies,
+        .tarball_tarball = optional_tarball_tarball_path,
+        .report = report,
     };
     defer gpa.free(context.generator_version);
 
     main_log.info(@src(), "Writing generated ebuild to STDOUT...", .{});
-    try mustache.render(template, context, stdout);
+
+    var render_errors: ztl.RenderErrorReport = .{};
+    defer render_errors.deinit();
+
+    template.render(stdout, context, .{ .error_report = &render_errors }) catch |err| {
+        file_searching_events.err(@src(), "Error when rendering template: {s} caused by: {}", .{
+            @errorName(err),
+            render_errors,
+        });
+        return error.InvalidTemplate;
+    };
+
     main_log.info(@src(), "Generated ebuild was written to STDOUT.", .{});
     main_log.info(@src(), "Note (if using default template): license header there (with \"Gentoo Authors\" and GNU GPLv2) is just an convenience default for making ebuilds for ::gentoo and ::guru repos easier, you can relicense output however you want.", .{});
 

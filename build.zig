@@ -11,9 +11,6 @@ pub fn build(b: *std.Build) void {
     const no_bin = b.option(bool, "no-bin", "Do not output anything, trigger analysis only (useful for incremental compilation) (default: false)") orelse false;
 
     const dep_opts = .{ .target = target, .optimize = optimize };
-    const mod_mustache =
-        b.dependency("mustache", dep_opts)
-        .module("mustache");
     const mod_ztl =
         b.dependency("ztl", dep_opts)
         .module("ztl");
@@ -29,7 +26,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "mustache", .module = mod_mustache },
             .{ .name = "ztl", .module = mod_ztl },
             .{ .name = "Report", .module = mod_Report },
         },
