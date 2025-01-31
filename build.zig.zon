@@ -10,6 +10,10 @@
             .url = "git+https://github.com/batiati/mustache-zig?ref=master#7046270199f68eae32a9e79f3933088621f27d24",
             .hash = "12201f5bda90b5de1915dc60da9cf1cd846d79a36c2e1313aa467462fa985f117bcc",
         },
+        .ztl = .{
+            .url = "git+https://github.com/karlseguin/ztl?ref=master#3fcd412b29780a647ee4b6c765d623de5113cf96",
+            .hash = "12201391cd1bead3744fa6af2ba1dea3999d5b166407b1acb688f91de801eec92eff",
+        },
     },
     .paths = .{
         "build.zig",
