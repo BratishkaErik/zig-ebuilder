@@ -331,6 +331,24 @@ const Parser = struct {
                         });
                     }
 
+                    const Sort = struct {
+                        values: []const Dep,
+
+                        pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
+                            const a = ctx.values[a_index];
+                            const b = ctx.values[b_index];
+
+                            return switch (a.storage) {
+                                .local => switch (b.storage) {
+                                    .local => false,
+                                    .remote => true,
+                                },
+                                .remote => false,
+                            };
+                        }
+                    };
+                    deps.sort(Sort{ .values = deps.values() });
+
                     result.dependencies = .{ .map = deps };
                     continue;
                 },
