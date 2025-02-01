@@ -149,55 +149,82 @@ pub fn collect(
         const dependencies = build_zig_zon_struct.dependencies orelse continue;
 
         var all_paths: std.ArrayListUnmanaged(struct {
-            hash: []const u8,
             name: []const u8,
             storage: union(enum) {
-                remote: struct { url: []const u8 },
-                local: void,
+                remote: struct { url: []const u8, hash: []const u8 },
+                local: []const u8,
             },
         }) = try .initCapacity(arena, dependencies.map.count());
         defer all_paths.deinit(arena);
 
-        for (dependencies.map.keys(), dependencies.map.values(), 0..) |key, resource, i| {
+        var fetchable: struct {
+            start: ?usize = null,
+            count: usize = 0,
+        } = .{};
+        for (dependencies.map.values(), 0..) |resource, i| switch (resource.storage) {
+            .local => continue,
+            .remote => {
+                if (fetchable.start == null)
+                    fetchable.start = i;
+
+                fetchable.count += 1;
+            },
+        };
+
+        for (dependencies.map.keys(), dependencies.map.values(), 1..) |key, resource, i| {
             switch (fetch_mode) {
                 .skip => @panic("unreachable"),
                 .hashed, .plain => {},
             }
 
-            file_events.info(@src(), "Fetching \"{s}\" [{d}/{d}]...", .{ key, i + 1, dependencies.map.count() });
+            switch (resource.storage) {
+                .remote => |remote| {
+                    file_events.info(@src(), "Fetching \"{s}\" [{d}/{d}]...", .{ key, i - fetchable.start.?, fetchable.count });
 
-            const result_of_fetch = try zig_process.fetch(
-                arena,
-                cwd,
-                .{
-                    .storage_loc = generator_setup.dependencies_storage,
-                    .resource = resource,
-                    .fetch_mode = fetch_mode,
+                    const result_of_fetch = try zig_process.fetch(
+                        arena,
+                        cwd,
+                        .{
+                            .storage_loc = generator_setup.dependencies_storage,
+                            .resource = resource,
+                            .fetch_mode = fetch_mode,
+                        },
+                        file_events,
+                    );
+                    defer {
+                        arena.free(result_of_fetch.stderr);
+                    }
+
+                    if (result_of_fetch.stderr.len != 0) {
+                        file_events.err(@src(), "Error when fetching dependency \"{s}\". Details are in DEBUG.", .{key});
+                        file_events.debug(@src(), "{s}", .{result_of_fetch.stderr});
+                        return error.FetchFailed;
+                    }
+
+                    all_paths.appendAssumeCapacity(.{
+                        .name = key,
+                        .storage = .{
+                            .remote = .{
+                                .url = remote.url,
+                                .hash = std.mem.trim(u8, result_of_fetch.stdout, &std.ascii.whitespace),
+                            },
+                        },
+                    });
                 },
-                file_events,
-            );
-            defer {
-                arena.free(result_of_fetch.stderr);
+                .local => |local| all_paths.appendAssumeCapacity(.{
+                    .name = key,
+                    .storage = .{
+                        .local = local.path,
+                    },
+                }),
             }
-
-            if (result_of_fetch.stderr.len != 0) {
-                file_events.err(@src(), "Error when fetching dependency \"{s}\". Details are in DEBUG.", .{key});
-                file_events.debug(@src(), "{s}", .{result_of_fetch.stderr});
-                return error.FetchFailed;
-            }
-
-            all_paths.appendAssumeCapacity(.{
-                .hash = std.mem.trim(u8, result_of_fetch.stdout, &std.ascii.whitespace),
-                .name = key,
-                .storage = switch (resource.storage) {
-                    .remote => |remote| .{ .remote = .{ .url = remote.url } },
-                    .local => .local,
-                },
-            });
         }
 
         for (all_paths.items) |item| {
-            var package_loc = try generator_setup.packages.openDir(arena, item.hash);
+            var package_loc = switch (item.storage) {
+                .local => |sub_path| try cwd.openDir(arena, sub_path),
+                .remote => |remote| try generator_setup.packages.openDir(arena, remote.hash),
+            };
             errdefer package_loc.deinit(arena);
 
             file_events.debug(@src(), "searching {s}...", .{package_loc.string});
@@ -236,7 +263,7 @@ pub fn collect(
                         .url = remote.url,
                     };
 
-                    const result = try vendor_urls_map.getOrPut(arena, item.hash);
+                    const result = try vendor_urls_map.getOrPut(arena, remote.hash);
                     result.value_ptr.* = if (result.found_existing == false) new else resolve_conflict: {
                         const old = result.value_ptr.*;
                         switch (std.mem.eql(u8, old.url, new.url)) {
