@@ -128,13 +128,17 @@ pub fn collect(
 
             if (std.mem.eql(u8, option.name, "optimize")) {
                 std.debug.assert(std.mem.eql(u8, option.type, "enum"));
-                std.debug.assert(options_status.optimize == .none);
+                if (options_status.optimize != .none) {
+                    main_log.warn(@src(), "Optimize and release options added twice?", .{});
+                }
 
                 options_status.optimize = .all;
                 continue;
             } else if (std.mem.eql(u8, option.name, "release")) {
                 std.debug.assert(std.mem.eql(u8, option.type, "bool"));
-                std.debug.assert(options_status.optimize == .none);
+                if (options_status.optimize != .none) {
+                    main_log.warn(@src(), "Optimize and release options added twice?", .{});
+                }
 
                 options_status.optimize = .explicit;
                 continue;
