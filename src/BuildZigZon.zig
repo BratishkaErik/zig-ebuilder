@@ -89,7 +89,7 @@ pub fn read(
     var ast: std.zig.Ast = try .parse(allocator, file_content, .zon);
     defer ast.deinit(allocator);
 
-    const zoir = try std.zig.ZonGen.generate(allocator, ast);
+    const zoir = try std.zig.ZonGen.generate(allocator, ast, .{ .parse_str_lits = true });
     defer zoir.deinit(allocator);
 
     if (zoir.hasCompileErrors()) {
