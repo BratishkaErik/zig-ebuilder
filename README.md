@@ -139,9 +139,7 @@ $ zig-ebuilder . --zig_build_additional_args -Dbackend=arcan
 ```
 
 `--custom_template`: Specify file with custom
-[Mustache](https://mustache.github.io/) template. Uses
-[mustache-zig](https://github.com/batiati/mustache-zig) module
-under the hood, so check there limitations as well.
+[ZTL](https://github.com/karlseguin/ztl) template.
 
 ## Licenses
 

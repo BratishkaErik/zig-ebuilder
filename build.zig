@@ -10,8 +10,10 @@ pub fn build(b: *std.Build) void {
 
     const no_bin = b.option(bool, "no-bin", "Do not output anything, trigger analysis only (useful for incremental compilation) (default: false)") orelse false;
 
-    const dep_mustache = b.dependency("mustache", .{ .target = target, .optimize = optimize });
-    const mod_mustache = dep_mustache.module("mustache");
+    const dep_opts = .{ .target = target, .optimize = optimize };
+    const mod_ztl =
+        b.dependency("ztl", dep_opts)
+        .module("ztl");
 
     const mod_Report = b.addModule("Report", .{
         .root_source_file = b.path("share/build_runners/Report.zig"),
@@ -24,7 +26,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "mustache", .module = mod_mustache },
+            .{ .name = "ztl", .module = mod_ztl },
             .{ .name = "Report", .module = mod_Report },
         },
     });
