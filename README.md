@@ -151,7 +151,7 @@ Short overview:
 * Generator itself is licensed under EUPL-1.2.
 * Some snippets from Zig upstream and modified build runners are
 licensed under upstream MIT.
-* `build.zig`, `build.zig.zon` and default Mustache template are
+* `build.zig`, `build.zig.zon` and default ZTL templates are
 licensed under 0BSD.
 * This README and CI files are licensed under CC0-1.
 
