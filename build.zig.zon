@@ -6,9 +6,9 @@
     .version = "0.0.0",
 
     .dependencies = .{
-        .mustache = .{
-            .url = "git+https://github.com/batiati/mustache-zig?ref=master#7046270199f68eae32a9e79f3933088621f27d24",
-            .hash = "12201f5bda90b5de1915dc60da9cf1cd846d79a36c2e1313aa467462fa985f117bcc",
+        .ztl = .{
+            .url = "git+https://github.com/karlseguin/ztl?ref=master#7ab7d73a18d5da3a262456f5f5014b4576df2a50",
+            .hash = "1220dfaa9a62751f07c58d03714e13949459fff55a80cd5a220e9b4b9fd3afaea911",
         },
     },
     .paths = .{
