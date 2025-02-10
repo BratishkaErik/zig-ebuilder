@@ -5,12 +5,17 @@
 const Report = @This();
 
 system_libraries: []const SystemLibrary,
-system_integrations: []const []const u8,
+system_integrations: []const SystemIntegration,
 user_options: []const UserOption,
 
 pub const SystemLibrary = struct {
     name: []const u8,
     used_by: []const []const u8,
+};
+
+pub const SystemIntegration = struct {
+    name: []const u8,
+    enabled: bool,
 };
 
 pub const UserOption = struct {

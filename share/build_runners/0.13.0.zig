@@ -515,16 +515,34 @@ fn runStepNames(
             }
         }.lessThan);
 
-        const system_integrations = b.dupeStrings(b.graph.system_library_options.keys());
-        std.mem.sort([]const u8, system_integrations, {}, struct {
-            pub fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
-                return std.mem.order(u8, lhs, rhs) == .lt;
+        var system_integrations_list: std.ArrayListUnmanaged(Report.SystemIntegration) = .{};
+        system_integrations_list.ensureUnusedCapacity(gpa, b.graph.system_library_options.count()) catch @panic("OOM");
+        for (b.graph.system_library_options.keys(), b.graph.system_library_options.values()) |name, status| {
+            system_integrations_list.appendAssumeCapacity(.{
+                .name = name,
+                .enabled = switch (status) {
+                    .user_disabled, .user_enabled => unreachable, // Should be already decided by now.
+                    .declared_disabled => false,
+                    .declared_enabled => true,
+                },
+            });
+        }
+        std.mem.sort(Report.SystemIntegration, system_integrations_list.items, {}, struct {
+            pub fn lessThan(_: void, lhs: Report.SystemIntegration, rhs: Report.SystemIntegration) bool {
+                if (lhs.enabled == false and rhs.enabled == true) return false; // swap
+                if (lhs.enabled == true and rhs.enabled == false) return true; // leave intact
+
+                return switch (std.mem.order(u8, lhs.name, rhs.name)) {
+                    .lt => true, // leave intact
+                    .eq => false, // order does not matter
+                    .gt => false, // swap
+                };
             }
         }.lessThan);
 
         const report: Report = .{
             .system_libraries = system_libraries_list.items,
-            .system_integrations = system_integrations,
+            .system_integrations = system_integrations_list.items,
             .user_options = user_options.items,
         };
 
