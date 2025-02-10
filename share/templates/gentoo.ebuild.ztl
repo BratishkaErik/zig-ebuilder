@@ -133,10 +133,24 @@ if (@report["user_options"].len > 0) {
 		my_zbs_args.append(null);
 	}
 }
+
+var first_disabled_option = true;
 foreach (@report["system_integrations"]) |integration| {
+	if (integration["enabled"] == false) {
+		if (first_disabled_option) {
+			my_zbs_args.append(null);
+			my_zbs_args.append("# For some reason following options were disabled:");
+			my_zbs_args.append("# If it was not you and they are disabled by default,");
+			my_zbs_args.append("# no matter if system mode is enabled or not,");
+			my_zbs_args.append("# check whether there are any reasons to do so.");
+			my_zbs_args.append("# (for example, rare dependency)");
+			first_disabled_option = false;
+		}
+	}
+
 	// Per policy from https://bugs.gentoo.org/947033 ,
 	// enable all integrations by default.
-	my_zbs_args.append("-fsys=" + integration);
+	my_zbs_args.append("-fsys=" + integration["name"]);
 }
 
 if (my_zbs_args.len > 0) {

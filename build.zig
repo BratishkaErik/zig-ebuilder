@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     const dep_opts = .{ .target = target, .optimize = optimize };
     const mod_ztl =
         b.dependency("ztl", dep_opts)
-        .module("ztl");
+            .module("ztl");
 
     const mod_Report = b.addModule("Report", .{
         .root_source_file = b.path("share/build_runners/Report.zig"),
