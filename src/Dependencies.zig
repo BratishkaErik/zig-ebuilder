@@ -12,108 +12,30 @@ const location = @import("location.zig");
 const setup = @import("setup.zig");
 
 const Dependencies = @This();
+pub const Package = @import("Dependencies/Package.zig");
+pub const FetchMode = enum { skip, plain, hashed };
 
-/// Value of `name` field in `build.zig.zon` .
+/// Value of `name` field in `build.zig.zon`,
+/// or empty if no `build.zig.zon`.
 root_package_name: []const u8,
 
-/// URLs that are successfully parsed or translated to tarball URLs.
-tarball: []const VendorUri,
-/// URLs that are needed to be packaged by maintainer themselves.
-git_commit: []const GitCommitDep,
+/// Value of `version` field in `build.zig.zon`,
+/// or empty if no `build.zig.zon`.
+root_package_version: []const u8,
+
+/// Sorted alphabetically. Can contain only remote URIs.
+packages: []const Package,
 
 pub const empty: Dependencies = .{
-    .root_package_name = &[0]u8{},
-    .tarball = &[0]VendorUri{},
-    .git_commit = &[0]GitCommitDep{},
+    .root_package_name = "",
+    .root_package_version = "",
+    .packages = &[0]Package{},
 };
 
 pub fn deinit(self: Dependencies, allocator: std.mem.Allocator) void {
     allocator.free(self.root_package_name);
-    for (self.tarball) |tarball| {
-        allocator.free(tarball.name);
-        allocator.free(tarball.url);
-    }
-    allocator.free(self.tarball);
-
-    for (self.git_commit) |git_commit| {
-        allocator.free(git_commit.hash);
-        allocator.free(git_commit.name);
-    }
-    allocator.free(self.git_commit);
+    allocator.free(self.root_package_version);
 }
-
-pub const FetchMode = enum { skip, plain, hashed };
-
-pub fn createGitCommitDependenciesTarball(
-    arena: std.mem.Allocator,
-    git_commits: []const GitCommitDep,
-    packages_loc: location.Dir,
-    writer: anytype,
-) !void {
-    var full_tar_content: std.ArrayListUnmanaged(u8) = .empty;
-    defer full_tar_content.deinit(arena);
-    var full_tar = std.tar.writer(full_tar_content.writer(arena).any());
-    full_tar.mtime_now = 1;
-
-    for (git_commits) |git_commit_dependency| {
-        const archive_file_name = try git_commit_dependency.toFileName(arena);
-        defer arena.free(archive_file_name);
-
-        const uncompressed_content = uncompressed_content: {
-            var tar_content: std.ArrayListUnmanaged(u8) = .empty;
-            errdefer tar_content.deinit(arena);
-            const tar_content_writer = tar_content.writer(arena).any();
-
-            var tar = std.tar.writer(tar_content_writer);
-
-            var iterate_dir = try packages_loc.dir.openDir(git_commit_dependency.hash, .{ .iterate = true });
-            defer iterate_dir.close();
-
-            var walker = try iterate_dir.walk(arena);
-            defer walker.deinit();
-            while (try walker.next()) |entry| {
-                try tar.writeEntry(entry);
-            }
-            try tar.finish();
-
-            break :uncompressed_content try tar_content.toOwnedSlice(arena);
-        };
-        defer arena.free(uncompressed_content);
-
-        const compressed_content = compressed_content: {
-            var tar_gz_content: std.ArrayListUnmanaged(u8) = .empty;
-            errdefer tar_gz_content.deinit(arena);
-
-            var uncompressed_content_fbs = std.io.fixedBufferStream(uncompressed_content);
-            const uncompressed_content_reader = uncompressed_content_fbs.reader();
-
-            try std.compress.gzip.compress(uncompressed_content_reader, tar_gz_content.writer(arena), .{ .level = .default });
-            break :compressed_content try tar_gz_content.toOwnedSlice(arena);
-        };
-        defer arena.free(compressed_content);
-
-        try full_tar.writeFileBytes(archive_file_name, compressed_content, .{});
-    }
-    try full_tar.finish();
-
-    var tar_reader_fbs = std.io.fixedBufferStream(full_tar_content.items);
-    try std.compress.gzip.compress(tar_reader_fbs.reader(), writer, .{ .level = .default });
-}
-
-const VendorUri = struct {
-    name: []const u8,
-    /// TODO: many urls? mirrors?
-    url: []const u8,
-};
-
-const GitCommitDep = struct {
-    name: []const u8,
-    hash: []const u8,
-
-    fn toFileName(self: GitCommitDep, allocator: std.mem.Allocator) error{OutOfMemory}![]const u8 {
-        return try std.fmt.allocPrint(allocator, "{s}-{s}.{s}", .{ self.name, self.hash, @tagName(FileType.@"tar.gz") });
-    }
-};
 
 pub fn collect(
     /// All data allocated by this allocator is saved.
@@ -128,9 +50,9 @@ pub fn collect(
     fetch_mode: FetchMode,
     zig_process: ZigProcess,
 ) !Dependencies {
-    // Keyed by `hash`
-    var vendor_urls_map: std.StringArrayHashMapUnmanaged(VendorUri) = .empty;
-    defer vendor_urls_map.deinit(arena);
+    // Key is `hash`, used to detect duplicates and existing entries.
+    var packages: std.StringArrayHashMapUnmanaged(Package) = .empty;
+    //defer packages.deinit(arena);
 
     var fifo: std.fifo.LinearFifo(struct { location.Dir, BuildZigZon }, .Dynamic) = .init(arena);
     defer fifo.deinit();
@@ -151,7 +73,7 @@ pub fn collect(
         var all_paths: std.ArrayListUnmanaged(struct {
             name: []const u8,
             storage: union(enum) {
-                remote: struct { url: []const u8, hash: []const u8 },
+                remote: struct { hash: []const u8, uri: std.Uri },
                 local: []const u8,
             },
         }) = try .initCapacity(arena, dependencies.map.count());
@@ -181,6 +103,11 @@ pub fn collect(
                 .remote => |remote| {
                     file_events.info(@src(), "Fetching \"{s}\" [{d}/{d}]...", .{ key, i - fetchable.start.?, fetchable.count });
 
+                    const uri = std.Uri.parse(remote.url) catch |err| {
+                        file_events.err(@src(), "Invalid URI: \"{s}\": {s}.", .{ remote.url, @errorName(err) });
+                        return error.InvalidUri;
+                    };
+
                     const result_of_fetch = try zig_process.fetch(
                         arena,
                         cwd,
@@ -205,7 +132,7 @@ pub fn collect(
                         .name = key,
                         .storage = .{
                             .remote = .{
-                                .url = remote.url,
+                                .uri = uri,
                                 .hash = std.mem.trim(u8, result_of_fetch.stdout, &std.ascii.whitespace),
                             },
                         },
@@ -229,17 +156,17 @@ pub fn collect(
 
             file_events.debug(@src(), "searching {s}...", .{package_loc.string});
 
-            var next_build_zig_zon_struct: BuildZigZon = zon: {
+            const next_build_zig_zon_struct: BuildZigZon = zon: {
                 const package_build_zig_zon_loc = package_loc.openFile(arena, "build.zig.zon") catch |err| switch (err) {
                     // It might be a plain package, without build.zig.zon
                     error.FileNotFound => break :zon .{
-                        .name = "", // replaced below
+                        .name = "", // replaced later when needed.
+                        .dependencies = null,
                         // After that, all is ignored RN.
                         .version = .{ .major = 0, .minor = 0, .patch = 0 },
                         .version_raw = "",
                         .minimum_zig_version = null,
                         .minimum_zig_version_raw = null,
-                        .dependencies = null,
                         .paths = &.{""},
                     },
                     else => |e| return e,
@@ -251,260 +178,168 @@ pub fn collect(
 
                 break :zon try .read(arena, zig_process.version, package_build_zig_zon_loc, next_file_events);
             };
-            if (next_build_zig_zon_struct.name.len == 0)
-                next_build_zig_zon_struct.name = item.name;
 
             try fifo.writeItem(.{ package_loc, next_build_zig_zon_struct });
             switch (item.storage) {
                 .local => continue,
                 .remote => |remote| {
-                    const new: VendorUri = .{
-                        .name = next_build_zig_zon_struct.name,
-                        .url = remote.url,
-                    };
+                    const dep_name = if (next_build_zig_zon_struct.name.len > 0)
+                        next_build_zig_zon_struct.name
+                    else
+                        null;
 
-                    const result = try vendor_urls_map.getOrPut(arena, remote.hash);
-                    result.value_ptr.* = if (result.found_existing == false) new else resolve_conflict: {
-                        const old = result.value_ptr.*;
-                        switch (std.mem.eql(u8, old.url, new.url)) {
-                            true => {
-                                // TODO maybe also compare names?
-                                file_events.warn(@src(), "Found 2 package variants with identical URLs. Ignoring names, leaving old. Old name: {s}, new name: {s}, URL: {s}", .{ old.name, new.name, old.url });
-                                break :resolve_conflict old;
-                            },
-                            else => {
-                                const old_uri = std.Uri.parse(old.url) catch |err| {
-                                    file_events.err(@src(), "Invalid URI \"{s}\": {s}", .{ old.url, @errorName(err) });
-                                    return error.InvalidBuildZigZon;
-                                };
-                                const new_uri = std.Uri.parse(new.url) catch |err| {
-                                    file_events.err(@src(), "Invalid URI \"{s}\": {s}", .{ new.url, @errorName(err) });
-                                    return error.InvalidBuildZigZon;
-                                };
+                    const dep_events = try file_events.child(dep_name orelse "pristine package");
+                    defer dep_events.deinit();
 
-                                if ((std.ascii.eqlIgnoreCase(old_uri.scheme, "https") or
-                                    std.ascii.eqlIgnoreCase(old_uri.scheme, "http")) and
-                                    (std.ascii.eqlIgnoreCase(new_uri.scheme, "git+https") or
-                                        std.ascii.eqlIgnoreCase(new_uri.scheme, "git+http")))
-                                {
-                                    file_events.warn(@src(), "Found 2 package variants with different URIs: tarball and Git commit. Leaving tarball. Tarball variant: {any}, commit variant: {any}", .{
-                                        std.json.fmt(old, .{ .whitespace = .indent_2 }),
-                                        std.json.fmt(new, .{ .whitespace = .indent_2 }),
-                                    });
-                                    break :resolve_conflict old;
-                                } else if ((std.ascii.eqlIgnoreCase(old_uri.scheme, "git+https") or
-                                    std.ascii.eqlIgnoreCase(old_uri.scheme, "git+http")) and
-                                    (std.ascii.eqlIgnoreCase(new_uri.scheme, "https") or
-                                        std.ascii.eqlIgnoreCase(new_uri.scheme, "http")))
-                                {
-                                    file_events.warn(@src(), "Found 2 package variants with different URIs: Git commit and tarball. Changing to tarball. Commit variant: {any}, tarball variant: {any}", .{
-                                        std.json.fmt(old, .{ .whitespace = .indent_2 }),
-                                        std.json.fmt(new, .{ .whitespace = .indent_2 }),
-                                    });
-                                    break :resolve_conflict new;
-                                } else {
-                                    service_map: {
-                                        const old_host = try old_uri.host.?.toRawMaybeAlloc(arena);
-                                        const new_host = try new_uri.host.?.toRawMaybeAlloc(arena);
-                                        const old_service = Service.fromHost.get(old_host) orelse break :service_map;
-                                        const new_service = Service.fromHost.get(new_host) orelse break :service_map;
+                    const new_package: Package = try .init(
+                        arena,
+                        .{
+                            .name = dep_name,
+                            .hash = remote.hash,
+                            .uri = remote.uri,
+                        },
+                        dep_events,
+                    );
 
-                                        if (old_service == .github and new_service == .mach) {
-                                            file_events.warn(@src(), "Found 2 package variants with different services: GitHub and Hexops mirror. Changing to Hexops mirror. GitHub variant: {any}, Hexops variant: {any}", .{
-                                                std.json.fmt(old, .{ .whitespace = .indent_2 }),
-                                                std.json.fmt(new, .{ .whitespace = .indent_2 }),
-                                            });
-                                            break :resolve_conflict new;
-                                        } else if (old_service == .mach and new_service == .github) {
-                                            file_events.warn(@src(), "Found 2 package variants with different services: Hexops mirror and GitHub. Leaving Hexops mirror. Hexops variant: {any}, GitHub variant: {any}", .{
-                                                std.json.fmt(old, .{ .whitespace = .indent_2 }),
-                                                std.json.fmt(new, .{ .whitespace = .indent_2 }),
-                                            });
-                                            break :resolve_conflict old;
-                                        }
-                                    }
-
-                                    std.debug.panic("TODO (please report to upstream of zig-ebuilder): resolve conflict: existing: {any}, new: {any}", .{
-                                        std.json.fmt(old, .{ .whitespace = .indent_2 }),
-                                        std.json.fmt(new, .{ .whitespace = .indent_2 }),
-                                    });
-                                }
-                            },
-                        }
-                    };
+                    const gop = try packages.getOrPut(arena, new_package.hash);
+                    if (gop.found_existing == false) {
+                        gop.value_ptr.* = new_package;
+                    } else {
+                        const existing_package = gop.value_ptr.*;
+                        gop.value_ptr.* = try Package.choose_best(arena, existing_package, new_package, dep_events) orelse new: {
+                            dep_events.warn(@src(), "Report warning below to zig-ebuilder upstream:", .{});
+                            dep_events.warn(@src(), "Found duplicate and can't decide between two. Replacing.", .{});
+                            break :new new_package;
+                        };
+                    }
                 },
             }
         }
     }
+    file_events.info(@src(), "Packages count: {d}", .{packages.count()});
 
-    file_events.info(@src(), "Vendor URLs count: {d}", .{vendor_urls_map.count()});
+    // Mutate `packages` in-place to transform Git commits to
+    // tarballs where possible (and algorithm is known).
+    for (packages.values()) |*dep| {
+        switch (dep.kind) {
+            .tarball => continue,
+            .git_ref => {},
+        }
 
+        const dep_events = try file_events.child(dep.name orelse "pristine package");
+        defer dep_events.deinit();
+
+        try dep.transform_git_commit_to_tarball(arena, dep_events);
+    }
+
+    // Sort:
+    // * alphabetically,
+    // * "pristine packages" to the end, ordered inside by hash.
     const Sort = struct {
-        keys: []VendorUri,
+        values: []const Package,
 
         pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
-            return switch (std.mem.order(u8, ctx.keys[a_index].name, ctx.keys[b_index].name)) {
-                .lt => true,
-                .eq => false,
-                .gt => false,
+            const a = ctx.values[a_index];
+            const b = ctx.values[b_index];
+
+            if (a.name == null and b.name == null) return switch (std.mem.order(u8, a.hash, b.hash)) {
+                .lt => true, // leave intact
+                .eq => false, // order does not matter
+                .gt => false, // swap
+            };
+            if (a.name == null and b.name != null) return false; // swap
+            if (a.name != null and b.name == null) return true; // leave intact
+
+            return switch (std.mem.order(u8, a.name.?, b.name.?)) {
+                .lt => true, // leave intact
+                .eq => false, // order does not matter
+                .gt => false, // swap
             };
         }
     };
-
-    vendor_urls_map.sort(Sort{ .keys = vendor_urls_map.values() });
-
-    var array: std.ArrayListUnmanaged(VendorUri) = try .initCapacity(gpa, vendor_urls_map.count());
-    errdefer array.deinit(gpa);
-
-    var packaging_needed: std.ArrayListUnmanaged(GitCommitDep) = try .initCapacity(gpa, vendor_urls_map.count());
-    errdefer packaging_needed.deinit(gpa);
-
-    for (vendor_urls_map.keys(), vendor_urls_map.values()) |hash, dep| {
-        const uri = std.Uri.parse(dep.url) catch @panic("unreachable (report to upstream of zig-ebuilder)");
-
-        var name: std.ArrayListUnmanaged(u8) = .empty;
-        defer name.deinit(gpa);
-        var url: std.ArrayListUnmanaged(u8) = .empty;
-        defer url.deinit(gpa);
-
-        const name_writer = name.writer(gpa);
-        const url_writer = url.writer(gpa);
-
-        // Print everything 'raw' so that Mustache template
-        // can percent-encode it by itself.
-        const ext: FileType = if (std.ascii.eqlIgnoreCase(uri.scheme, "git+https") or std.ascii.eqlIgnoreCase(uri.scheme, "git+http")) git: {
-            // Assuming it is a commit. If "zig fetch" was called by author:
-            // * with "--save" option: tags are rewritten as commits,
-            // * with "--save-exact" option: tags are not rewritten.
-            const commit = uri.fragment orelse @panic("TODO: what to do with exact-saved mutable data (like git+https://...#<tag>)? They should really point to immutable data (like what zig fetch --save would do here, using \"?ref=<tag>#commit\") but IDK how to message it to the authors...");
-            const host = try uri.host.?.toRawMaybeAlloc(arena);
-            const service = Service.fromHost.get(host) orelse {
-                packaging_needed.appendAssumeCapacity(.{
-                    .name = try GitCommitDep.toFileName(.{ .name = dep.name, .hash = hash }, gpa),
-                    .hash = try gpa.dupe(u8, hash),
-                });
-                continue;
-            };
-
-            var repository = try uri.path.toRawMaybeAlloc(arena);
-            std.debug.assert(std.mem.startsWith(u8, repository, "/"));
-            switch (service) {
-                .codeberg, .github, .sourcehut, .gitlab => if (std.mem.endsWith(u8, repository, ".git")) {
-                    repository = repository[0 .. repository.len - ".git".len];
-                },
-                .mach => @panic("unreachable: Hexops do not mirror Git repositories"),
-            }
-
-            switch (service) {
-                .codeberg, .github, .sourcehut => |s| {
-                    try url_writer.print("{s}{s}/archive/{raw}.tar.gz", .{ s.toUrl(), repository, commit });
-                    break :git .@"tar.gz";
-                },
-                .gitlab => |s| {
-                    // TODO: Change to ".tar.bz2" when/if `zig fetch` start to support it.
-                    try url_writer.print("{s}{s}/-/archive/{raw}.tar.gz", .{ s.toUrl(), repository, commit });
-                    break :git .@"tar.gz";
-                },
-                .mach => @panic("unreachable: Hexops do not mirror Git repositories"),
-            }
-        }
-            // If not a commit, then tarball.
-            else tarball: {
-                try url_writer.print("{s}", .{dep.url});
-                break :tarball FileType.fromPath(dep.url) orelse std.debug.panic("Unknown tarball extension for: {s}", .{dep.url});
-            };
-
-        if (zig_process.version.kind == .live)
-            // Hash already includes name (if applicable) on 0.14.
-            try name_writer.print("{s}.{s}", .{ hash, @tagName(ext) })
-        else
-            try name_writer.print("{s}-{s}.{s}", .{ dep.name, hash, @tagName(ext) });
-
-        array.appendAssumeCapacity(.{
-            .name = try name.toOwnedSlice(gpa),
-            .url = try url.toOwnedSlice(gpa),
-        });
-    }
+    packages.sort(Sort{ .values = packages.values() });
 
     return .{
         .root_package_name = try gpa.dupe(u8, project_build_zig_zon_struct.name),
-        .tarball = try array.toOwnedSlice(gpa),
-        .git_commit = try packaging_needed.toOwnedSlice(gpa),
+        .root_package_version = try gpa.dupe(u8, project_build_zig_zon_struct.version_raw),
+        .packages = packages.values(),
     };
 }
 
-/// Known services with relatively stable links to archives or
-/// source code.
-const Service = enum {
-    /// Codeberg.
-    codeberg,
-    /// GitHub main instance (not Enterprise).
-    github,
-    /// GitLab official instance.
-    gitlab,
-    /// Hexops mirror for Zig releases and Mach projects.
-    mach,
-    /// SourceHut Git instance.
-    sourcehut,
+// Tarball-tarball creation logic below.
 
-    /// Base URL, without trailing slash,
-    /// stripped of "www." etc. prefix if possible,
-    /// and prefers "https" over "http" if possible.
-    fn toUrl(self: Service) []const u8 {
-        return switch (self) {
-            .codeberg => "https://codeberg.org",
-            .github => "https://github.com",
-            .gitlab => "https://gitlab.com",
-            .mach => "https://pkg.machengine.org",
-            .sourcehut => "https://git.sr.ht",
-        };
+fn pack_directory_to_tar_gz(
+    arena: std.mem.Allocator,
+    directory: std.fs.Dir,
+    compression_level: std.compress.flate.deflate.Level,
+) ![]u8 {
+    const tar = tar: {
+        var memory: std.ArrayListUnmanaged(u8) = .empty;
+        const memory_writer = memory.writer(arena).any();
+
+        var tar = std.tar.writer(memory_writer);
+        {
+            var walker = try directory.walk(arena);
+            defer walker.deinit();
+            while (try walker.next()) |entry|
+                try tar.writeEntry(entry);
+            try tar.finish();
+        }
+
+        break :tar memory.items;
+    };
+    var tar_fbs = std.io.fixedBufferStream(tar);
+    const tar_reader = tar_fbs.reader();
+
+    const tar_gz = tar_gz: {
+        var memory: std.ArrayListUnmanaged(u8) = .empty;
+        const memory_writer = memory.writer(arena);
+
+        try std.compress.gzip.compress(tar_reader, memory_writer, .{ .level = compression_level });
+        break :tar_gz memory.items;
+    };
+
+    return tar_gz;
+}
+
+/// Resulting tarball has following structure:
+/// <written to the writer>:
+/// * dependency_1-hash.tar.gz
+/// * dependency_2-hash.tar.gz
+pub fn pack_git_commits_to_tarball_tarball(
+    arena: std.mem.Allocator,
+    packages: []const Package,
+    packages_loc: location.Dir,
+    writer: anytype,
+    events: Logger,
+) !void {
+    // TODO maybe play with more compression, or make it configurable?
+    const compression_level: std.compress.flate.deflate.Level = .default;
+
+    var memory: std.ArrayListUnmanaged(u8) = .empty;
+    const memory_writer = memory.writer(arena).any();
+    var tar = std.tar.writer(memory_writer);
+    tar.mtime_now = 1; // For consistent hashing IIRC.
+
+    for (packages) |package| {
+        switch (package.kind) {
+            .tarball => continue,
+            .git_ref => {},
+        }
+
+        var package_dir = try packages_loc.dir.openDir(package.hash, .{ .iterate = true });
+        defer package_dir.close();
+
+        const file_name = try std.fmt.allocPrint(arena, "{s}-{s}.tar.gz", .{ package.name orelse "pristine_package", package.hash });
+        events.warn(@src(), "Packing {s} ...", .{file_name});
+        const file_content_in_memory = try pack_directory_to_tar_gz(arena, package_dir, compression_level);
+
+        try tar.writeFileBytes(file_name, file_content_in_memory, .{});
     }
+    try tar.finish();
 
-    const fromHost: std.StaticStringMap(Service) = .initComptime(.{
-        .{ "codeberg.org", .codeberg },
-        .{ "www.codeberg.org", .codeberg },
-
-        .{ "github.com", .github },
-        .{ "www.github.com", .github },
-
-        .{ "gitlab.com", .gitlab },
-        .{ "www.gitlab.com", .gitlab },
-
-        // As of 2024 no "www." variant or redirect:
-        .{ "pkg.machengine.org", .mach },
-
-        // As of 2024 no "www." variant or redirect:
-        .{ "git.sr.ht", .sourcehut },
-    });
-};
-
-// Copied from Zig compiler sources ("src/package/Fetch.zig"
-// as for upstream commit ea527f7a850f0200681630d8f36131eca31ef48b).
-// SPDX-SnippetBegin
-// SPDX-SnippetCopyrightText: Zig contributors
-// SPDX-License-Identifier: MIT
-const FileType = enum {
-    tar,
-    @"tar.gz",
-    @"tar.bz2",
-    @"tar.xz",
-    @"tar.zst",
-    git_pack,
-    zip,
-
-    fn fromPath(file_path: []const u8) ?@This() {
-        const ascii = std.ascii;
-        if (ascii.endsWithIgnoreCase(file_path, ".tar")) return .tar;
-        // TODO enable when/if `zig fetch` starts to support it.
-        // if (ascii.endsWithIgnoreCase(file_path, ".tar.bz2")) return .@"tar.bz2";
-        if (ascii.endsWithIgnoreCase(file_path, ".tgz")) return .@"tar.gz";
-        if (ascii.endsWithIgnoreCase(file_path, ".tar.gz")) return .@"tar.gz";
-        if (ascii.endsWithIgnoreCase(file_path, ".txz")) return .@"tar.xz";
-        if (ascii.endsWithIgnoreCase(file_path, ".tar.xz")) return .@"tar.xz";
-        if (ascii.endsWithIgnoreCase(file_path, ".tzst")) return .@"tar.zst";
-        if (ascii.endsWithIgnoreCase(file_path, ".tar.zst")) return .@"tar.zst";
-        if (ascii.endsWithIgnoreCase(file_path, ".zip")) return .zip;
-        return null;
-    }
-};
-// SPDX-SnippetEnd
+    var tar_fbs = std.io.fixedBufferStream(memory.items);
+    const tar_reader = tar_fbs.reader();
+    events.warn(@src(), "Compressing all into tarball-tarball...", .{});
+    try std.compress.gzip.compress(tar_reader, writer, .{ .level = compression_level });
+}

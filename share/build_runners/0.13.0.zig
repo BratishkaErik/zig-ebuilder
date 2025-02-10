@@ -544,6 +544,7 @@ fn runStepNames(
             .system_libraries = system_libraries_list.items,
             .system_integrations = system_integrations_list.items,
             .user_options = user_options.items,
+            .used_dependencies_hashes = null, // not supported on 0.13.0
         };
 
         const port = std.process.parseEnvVarInt("ZIG_EBUILDER_REPORT_LISTEN_PORT", u16, 10) catch |err|

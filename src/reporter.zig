@@ -56,6 +56,7 @@ pub fn collect(
         .system_libraries = undefined,
         .system_integrations = undefined,
         .user_options = undefined,
+        .used_dependencies_hashes = undefined,
     };
 
     // Spawns thread

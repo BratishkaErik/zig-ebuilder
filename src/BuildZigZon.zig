@@ -172,10 +172,15 @@ const Parser = struct {
             };
             const top_level_field_type = std.meta.stringToEnum(TopLevelField, field.name) orelse .unknown;
 
+            const new_build_zig_zon_format = switch (self.zig_version.kind) {
+                .live => true,
+                .release => self.zig_version.sem_ver.order(.{ .major = 0, .minor = 14, .patch = 0 }) != .lt,
+            };
+
             switch (top_level_field_type) {
                 .name => {
                     result.name =
-                        if (self.zig_version.kind == .live) // Will be in 0.14 probably.
+                        if (new_build_zig_zon_format)
                             switch (field.value) {
                                 .enum_literal => |enum_literal| try allocator.dupe(u8, enum_literal.get(self.zoir)),
                                 // Allow for now since it's allowed for dependencies by Zig
@@ -216,7 +221,7 @@ const Parser = struct {
                     field_parsing_events.debug(@src(), "Valid std.SemanticVersion: {}", .{sem_ver});
                     continue;
                 },
-                .fingerprint => if (self.zig_version.kind == .live) {
+                .fingerprint => if (new_build_zig_zon_format) {
                     // Not stored, no use in it yet.
                     const fingerprint = switch (field.value) {
                         .int_literal => |int_literal| int_literal,

@@ -687,10 +687,21 @@ fn prepare(
             }
         }.lessThan);
 
+        var used_dependencies_hashes: std.ArrayListUnmanaged([]const u8) = .empty;
+        used_dependencies_hashes.ensureUnusedCapacity(arena, b.graph.dependency_cache.count()) catch @panic("OOM");
+        var it = b.graph.dependency_cache.valueIterator();
+        while (it.next()) |cache_value| {
+            const hash = cache_value.*.builder.pkg_hash;
+            const is_non_root_package = hash.len > 0;
+            std.debug.assert(is_non_root_package);
+            used_dependencies_hashes.appendAssumeCapacity(hash);
+        }
+
         const report: Report = .{
             .system_libraries = system_libraries_list.items,
             .system_integrations = system_integrations_list.items,
             .user_options = user_options.items,
+            .used_dependencies_hashes = used_dependencies_hashes.items,
         };
 
         const port = std.process.parseEnvVarInt("ZIG_EBUILDER_REPORT_LISTEN_PORT", u16, 10) catch |err|

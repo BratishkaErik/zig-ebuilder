@@ -35,23 +35,25 @@ HOMEPAGE="Write manually"
 
 <%
 // ZBS_DEPENDENCIES is declared only when non-empty.
-var zbs_dependencies = "";
-if (@dependencies["tarball"].len > 0 or @dependencies["git_commit"].len > 0) {
-	var map = [];
-	foreach (@dependencies["tarball"]) |dep| {
-		var pair = "[" + dep["name"] + "]='" + dep["url"] + "'";
+var map = [];
+
+foreach (@dependencies["tarball"]) |dep| {
+	var pair = "[" + dep["name"] + "]='" + dep["url"] + "'";
+	map.append(pair);
+}
+
+if (@tarball_tarball != null) {
+	map.append("# Untranslatable Git dependencies were found. Host");
+	map.append("# following tarball-tarball somewhere and add it to SRC_URI:");
+	map.append("# " + @tarball_tarball);
+	foreach (@dependencies["git_commit"]) |dep| {
+		var pair = "[" + dep["name"] + "]=''";
 		map.append(pair);
 	}
-	if (@dependencies["git_commit"].len > 0) {
-		map.append("# Untranslatable Git dependencies were found. Host");
-		map.append("# following tarball-tarball somewhere and add it to SRC_URI:");
-		map.append("# " + @zbs["tarball_tarball"]);
-		foreach (@dependencies["git_commit"]) |dep| {
-			var pair = "[" + dep["name"] + "]=''";
-			map.append(pair);
-		}
-	}
+}
 
+var zbs_dependencies = "";
+if (map.len > 0) {
 	zbs_dependencies = "declare -g -r -A ZBS_DEPENDENCIES=(\n";
 	foreach (map) |pair| {
 		zbs_dependencies += "\t" + pair + "\n";
@@ -71,9 +73,9 @@ var urls = [
 if (@dependencies["tarball"].len > 0) {
 	urls.append("${ZBS_DEPENDENCIES_SRC_URI}");
 }
-if (@dependencies["git_commit"].len > 0) {
+if (@tarball_tarball != null) {
 	urls.append("# Upload following tarball-tarball somewhere:");
-	urls.append("# " + @zbs["tarball_tarball"]);
+	urls.append("# " + @tarball_tarball);
 }
 
 var src_uri = "SRC_URI=\"\n";
