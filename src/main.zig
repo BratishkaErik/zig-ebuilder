@@ -267,6 +267,10 @@ pub fn main() !void {
         return error.InvalidTemplate;
     };
 
+    var arena_instance: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_instance.deinit();
+    const arena = arena_instance.allocator();
+
     const dependencies: Dependencies = if (global.fetch_mode != .skip) fetch: {
         const build_zig_zon_loc = if (project_setup.build_zig_zon) |build_zig_zon| build_zig_zon else {
             file_searching_events.err(@src(), "\"build.zig.zon\" was not found. Skipping fetching.", .{});
@@ -274,12 +278,7 @@ pub fn main() !void {
         };
         file_searching_events.info(@src(), "Found \"build.zig.zon\" file nearby, proceeding to fetch dependencies.", .{});
 
-        var arena_instance: std.heap.ArenaAllocator = .init(gpa);
-        defer arena_instance.deinit();
-        const arena = arena_instance.allocator();
-
-        var project_build_zig_zon_struct: BuildZigZon = try .read(arena, build_zig_zon_loc, file_events);
-        defer project_build_zig_zon_struct.deinit(arena);
+        const project_build_zig_zon_struct: BuildZigZon = try .read(arena, build_zig_zon_loc, file_events);
         break :fetch try .collect(
             gpa,
             arena,
@@ -294,35 +293,58 @@ pub fn main() !void {
     } else .empty;
     defer dependencies.deinit(gpa);
 
-    const optional_tarball_tarball_path: ?[]const u8 = if (dependencies.git_commit.len != 0) tarball_tarball: {
-        file_events.warn(@src(), "Found dependencies that were not translated from Git commit to tarball format: {d} items. Packing them into one archive...", .{dependencies.git_commit.len});
-        var tarballs_loc = try generator_setup.cache.makeOpenDir(gpa, "git_commit_tarballs");
-        defer tarballs_loc.deinit(gpa);
+    file_events.debug(
+        @src(),
+        "packages = {}",
+        .{std.json.fmt(dependencies.packages, .{ .whitespace = .indent_4 })},
+    );
 
-        var tar_mem: std.ArrayListUnmanaged(u8) = .empty;
-        defer tar_mem.deinit(gpa);
+    var git_commit_packages_count: usize = 0;
+    for (dependencies.packages) |package| switch (package.kind) {
+        .tarball => continue,
+        .git_ref => git_commit_packages_count += 1,
+    };
 
-        var hashed_writer = std.compress.hashedWriter(tar_mem.writer(gpa), std.hash.Crc32.init());
-        try Dependencies.createGitCommitDependenciesTarball(gpa, dependencies.git_commit, generator_setup.packages, hashed_writer.writer());
+    const optional_tarball_tarball: ?[]const u8 = if (git_commit_packages_count > 0) path: {
+        var archive_arena_instance: std.heap.ArenaAllocator = .init(gpa);
+        const archive_arena = archive_arena_instance.allocator();
+        defer archive_arena_instance.deinit();
 
         // Used for generated tarball-tarball name.
         const project_name = dependencies.root_package_name;
+        const project_version = dependencies.root_package_version;
 
-        const tarball_tarball_path = try std.fmt.allocPrint(gpa, "{s}-{d}.tar.gz", .{ project_name, hashed_writer.hasher.final() });
-        defer gpa.free(tarball_tarball_path);
+        const tarball_tarball_path = try std.fmt.allocPrint(
+            archive_arena,
+            "{s}-{s}-git_dependencies.tar.gz",
+            .{ project_name, project_version },
+        );
 
+        main_log.warn(@src(), "Found dependencies that were not translated from Git commit to tarball format: {d} items. Packing them into one archive...", .{git_commit_packages_count});
+        main_log.warn(@src(), "Packing them into one archive {s} ...", .{tarball_tarball_path});
+
+        var tarballs_loc = try generator_setup.cache.makeOpenDir(archive_arena, "git_commit_tarballs");
+        defer tarballs_loc.deinit(archive_arena);
+
+        var memory: std.ArrayListUnmanaged(u8) = .empty;
+        const memory_writer = memory.writer(archive_arena);
+
+        try Dependencies.pack_git_commits_to_tarball_tarball(
+            archive_arena,
+            dependencies.packages,
+            generator_setup.packages,
+            memory_writer,
+            main_log,
+        );
+
+        main_log.warn(@src(), "Writing to disk...", .{});
         try tarballs_loc.dir.writeFile(.{
             .sub_path = tarball_tarball_path,
-            .data = tar_mem.items,
+            .data = memory.items,
         });
 
-        break :tarball_tarball try std.fs.path.join(gpa, &.{ tarballs_loc.string, tarball_tarball_path });
+        break :path try std.fs.path.join(arena, &.{ tarballs_loc.string, tarball_tarball_path });
     } else null;
-    defer if (optional_tarball_tarball_path) |tarball_tarball_path| gpa.free(tarball_tarball_path);
-
-    var arena_instance: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
 
     main_log.info(@src(), "Running \"zig build\" with custom build runner. Arguments are in DEBUG.", .{});
     const report: Report = try reporter.collect(
@@ -337,6 +359,83 @@ pub fn main() !void {
         arena,
     );
 
+    const CategorizedDependency = struct {
+        file_name: []const u8,
+        download_url: []const u8,
+        // with_args: []const []const []const u8,
+    };
+    const categorized_dependencies = categorized_dependencies: {
+        var used_tarballs: std.ArrayListUnmanaged(CategorizedDependency) = try .initCapacity(arena, dependencies.packages.len);
+        defer used_tarballs.deinit(arena);
+        var unused_tarballs: std.ArrayListUnmanaged(CategorizedDependency) = try .initCapacity(arena, dependencies.packages.len);
+        defer unused_tarballs.deinit(arena);
+        var used_git_commits: std.ArrayListUnmanaged(CategorizedDependency) = try .initCapacity(arena, dependencies.packages.len);
+        defer used_git_commits.deinit(arena);
+        var unused_git_commits: std.ArrayListUnmanaged(CategorizedDependency) = try .initCapacity(arena, dependencies.packages.len);
+        defer unused_git_commits.deinit(arena);
+
+        for (dependencies.packages) |package| {
+            const used = if (report.used_dependencies_hashes) |used_hashes| check_hash: {
+                for (used_hashes) |used_hash| {
+                    if (std.mem.eql(u8, package.hash, used_hash))
+                        break :check_hash true;
+                } else break :check_hash false;
+            } else true; // Not supported by 0.13
+
+            switch (package.kind) {
+                .tarball => |kind| {
+                    const tarballs = if (used)
+                        &used_tarballs
+                    else
+                        &unused_tarballs;
+                    tarballs.appendAssumeCapacity(.{
+                        .file_name = try std.fmt.allocPrint(
+                            arena,
+                            "{s}-{s}.{s}",
+                            .{ package.name orelse "pristine_package", package.hash, @tagName(kind) },
+                        ),
+                        .download_url = try std.fmt.allocPrint(arena, "{}", .{package.uri}),
+                    });
+                },
+                .git_ref => {
+                    const git_commits = if (used)
+                        &used_git_commits
+                    else
+                        &unused_git_commits;
+
+                    git_commits.appendAssumeCapacity(.{
+                        // Assume they are in tarball-tarball already.
+                        .file_name = try std.fmt.allocPrint(
+                            arena,
+                            "{s}-{s}.tar.gz",
+                            .{ package.name orelse "pristine_package", package.hash },
+                        ),
+                        .download_url = "",
+                    });
+                },
+            }
+        }
+
+        break :categorized_dependencies .{
+            .tarball = .{
+                .used = try used_tarballs.toOwnedSlice(arena),
+                .unused = try unused_tarballs.toOwnedSlice(arena),
+            },
+            .git_commits = .{
+                .used = try used_git_commits.toOwnedSlice(arena),
+                .unused = try unused_git_commits.toOwnedSlice(arena),
+            },
+        };
+    };
+    main_log.info(@src(), "Used tarballs: {d}, used git commits: {d}", .{
+        categorized_dependencies.tarball.used.len,
+        categorized_dependencies.git_commits.used.len,
+    });
+    main_log.info(@src(), "Unused tarballs: {d}, unused git commits: {d}", .{
+        categorized_dependencies.tarball.unused.len,
+        categorized_dependencies.git_commits.unused.len,
+    });
+
     const context = .{
         .generator_version = try std.fmt.allocPrint(gpa, "{}", .{version}),
         .year = year: {
@@ -347,8 +446,8 @@ pub fn main() !void {
             .live => "9999",
             .release => try std.fmt.allocPrint(arena, "{d}.{d}", .{ zig_process.version.sem_ver.major, zig_process.version.sem_ver.minor }),
         },
-        .dependencies = dependencies,
-        .tarball_tarball = optional_tarball_tarball_path,
+        .packages = categorized_dependencies,
+        .tarball_tarball = optional_tarball_tarball,
         .report = report,
     };
     defer gpa.free(context.generator_version);
@@ -369,7 +468,7 @@ pub fn main() !void {
     main_log.info(@src(), "Generated ebuild was written to STDOUT.", .{});
     main_log.info(@src(), "Note (if using default template): license header there (with \"Gentoo Authors\" and GNU GPLv2) is just an convenience default for making ebuilds for ::gentoo and ::guru repos easier, you can relicense output however you want.", .{});
 
-    if (optional_tarball_tarball_path) |tarball_tarball_path| {
+    if (optional_tarball_tarball) |tarball_tarball_path| {
         main_log.warn(@src(), "Note: it appears your project has Git commit dependencies that generator was unable to convert, please host \"{s}\" somewhere and add it to SRC_URI.", .{tarball_tarball_path});
     }
 }

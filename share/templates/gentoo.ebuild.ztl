@@ -35,23 +35,33 @@ HOMEPAGE="Write manually"
 
 <%
 // ZBS_DEPENDENCIES is declared only when non-empty.
-var zbs_dependencies = "";
-if (@dependencies["tarball"].len > 0 or @dependencies["git_commit"].len > 0) {
-	var map = [];
-	foreach (@dependencies["tarball"]) |dep| {
-		var pair = "[" + dep["name"] + "]='" + dep["url"] + "'";
+var map = [];
+foreach (@packages["tarball"]["used"]) |package| {
+	var pair = "[" + package["file_name"] + "]='" + package["download_url"] + "'";
+	map.append(pair);
+}
+
+if (@tarball_tarball != null) {
+	map.append("# Untranslatable Git dependencies were found. Host");
+	map.append("# following tarball-tarball somewhere and add it to SRC_URI:");
+	map.append("# " + @tarball_tarball);
+	foreach (@packages["git_commits"]["used"]) |package| {
+		var pair = "[" + package["file_name"] + "]='" + package["download_url"] + "'";
 		map.append(pair);
 	}
-	if (@dependencies["git_commit"].len > 0) {
-		map.append("# Untranslatable Git dependencies were found. Host");
-		map.append("# following tarball-tarball somewhere and add it to SRC_URI:");
-		map.append("# " + @zbs["tarball_tarball"]);
-		foreach (@dependencies["git_commit"]) |dep| {
-			var pair = "[" + dep["name"] + "]=''";
-			map.append(pair);
-		}
-	}
+}
 
+foreach (@packages["tarball"]["unused"]) |package| {
+	var pair = "# Not used: [" + package["file_name"] + "]='" + package["download_url"] + "'";
+	map.append(pair);
+}
+foreach (@packages["git_commits"]["unused"]) |package| {
+	var pair = "# Not used: [" + package["file_name"] + "]='" + package["download_url"] + "'";
+	map.append(pair);
+}
+
+var zbs_dependencies = "";
+if (map.len > 0) {
 	zbs_dependencies = "declare -g -r -A ZBS_DEPENDENCIES=(\n";
 	foreach (map) |pair| {
 		zbs_dependencies += "\t" + pair + "\n";
@@ -64,16 +74,16 @@ ZIG_SLOT="<%= @zig_slot %>"
 inherit zig
 
 <%
-// ZBS_DEPENDENCIES_SRC_URI is used only when ZBS_DEPENDENCIES with tarballs is set.
+// ZBS_DEPENDENCIES_SRC_URI is used only when ZBS_DEPENDENCIES is set.
 var urls = [
 	"[Write manually main download URL of your package here]"
 ];
-if (@dependencies["tarball"].len > 0) {
+if (@packages["tarball"]["used"].len > 0) {
 	urls.append("${ZBS_DEPENDENCIES_SRC_URI}");
 }
-if (@dependencies["git_commit"].len > 0) {
+if (@tarball_tarball != null) {
 	urls.append("# Upload following tarball-tarball somewhere:");
-	urls.append("# " + @zbs["tarball_tarball"]);
+	urls.append("# " + @tarball_tarball);
 }
 
 var src_uri = "SRC_URI=\"\n";
@@ -133,10 +143,23 @@ if (@report["user_options"].len > 0) {
 		my_zbs_args.append(null);
 	}
 }
+
+var first_disabled_option = true;
 foreach (@report["system_integrations"]) |integration| {
-	// Per policy from https://bugs.gentoo.org/947033 ,
-	// enable all integrations by default.
-	my_zbs_args.append("-fsys=" + integration);
+	if (integration["enabled"]) {
+		my_zbs_args.append("-fsys=" + integration["name"]);
+	} else {
+		if (first_disabled_option) {
+			my_zbs_args.append(null);
+			my_zbs_args.append("# For some reason following options were disabled:");
+			my_zbs_args.append("# If it was not you and they are disabled by default,");
+			my_zbs_args.append("# no matter if system mode is enabled or not,");
+			my_zbs_args.append("# check whether there are any reasons to do so.");
+			my_zbs_args.append("# (for example, rare dependency)");
+			first_disabled_option = false;
+		}
+		my_zbs_args.append("-fno-sys=" + integration["name"]);
+	}
 }
 
 if (my_zbs_args.len > 0) {
