@@ -67,11 +67,12 @@ pub fn deinit(self: *BuildZigZon, allocator: std.mem.Allocator) void {
 
 pub fn read(
     allocator: std.mem.Allocator,
+    zig_version: @import("ZigProcess.zig").Version,
     loc: location.File,
     file_parsing_events: Logger,
 ) (error{ OutOfMemory, InvalidBuildZigZon } || std.fs.File.ReadError)!BuildZigZon {
     const file_content = std.zig.readSourceFileToEndAlloc(allocator, loc.file, null) catch |err| switch (err) {
-        error.UnsupportedEncoding => {
+        error.UnsupportedEncoding, error.InvalidEncoding => {
             file_parsing_events.err(@src(), "Unsupported encoding (not UTF-8) on file: {s}", .{loc.string});
             return error.InvalidBuildZigZon;
         },
@@ -110,6 +111,7 @@ pub fn read(
     const parser: Parser = .{
         .allocator = allocator,
         .zoir = zoir,
+        .zig_version = zig_version,
     };
     return try parser.parse(file_parsing_events);
 }
@@ -118,6 +120,7 @@ pub fn read(
 const Parser = struct {
     allocator: std.mem.Allocator,
     zoir: std.zig.Zoir,
+    zig_version: @import("ZigProcess.zig").Version,
 
     fn parse(self: *const Parser, file_parsing_events: Logger) error{ OutOfMemory, InvalidBuildZigZon }!BuildZigZon {
         std.debug.assert(self.zoir.hasCompileErrors() == false);
@@ -158,18 +161,38 @@ const Parser = struct {
             const field_parsing_events = try top_level_fields_parsing_events.child(field.name);
             defer field_parsing_events.deinit();
 
-            const TopLevelField = enum { name, version, minimum_zig_version, dependencies, paths, unknown };
+            const TopLevelField = enum {
+                name,
+                version,
+                fingerprint,
+                minimum_zig_version,
+                dependencies,
+                paths,
+                unknown,
+            };
             const top_level_field_type = std.meta.stringToEnum(TopLevelField, field.name) orelse .unknown;
 
             switch (top_level_field_type) {
                 .name => {
-                    result.name = switch (field.value) {
-                        .string_literal => |string_literal| try allocator.dupe(u8, string_literal),
-                        else => |not_a_string| {
-                            field_parsing_events.err(@src(), "Not a string: {}", .{not_a_string});
-                            return error.InvalidBuildZigZon;
-                        },
-                    };
+                    result.name =
+                        if (self.zig_version.kind == .live) // Will be in 0.14 probably.
+                            switch (field.value) {
+                                .enum_literal => |enum_literal| try allocator.dupe(u8, enum_literal.get(self.zoir)),
+                                // Allow for now since it's allowed for dependencies by Zig
+                                .string_literal => |string_literal| try allocator.dupe(u8, string_literal),
+                                else => |not_a_enum_literal| {
+                                    field_parsing_events.err(@src(), "Not a enum literal: {}", .{not_a_enum_literal});
+                                    return error.InvalidBuildZigZon;
+                                },
+                            }
+                        else switch (field.value) {
+                            .string_literal => |string_literal| try allocator.dupe(u8, string_literal),
+                            else => |not_a_string| {
+                                field_parsing_events.err(@src(), "Not a string: {}", .{not_a_string});
+                                return error.InvalidBuildZigZon;
+                            },
+                        };
+
                     field_parsing_events.debug(@src(), "Valid string: \"{s}\"", .{result.name});
                     continue;
                 },
@@ -192,6 +215,20 @@ const Parser = struct {
                     @field(result, @tagName(tag)) = sem_ver;
                     field_parsing_events.debug(@src(), "Valid std.SemanticVersion: {}", .{sem_ver});
                     continue;
+                },
+                .fingerprint => if (self.zig_version.kind == .live) {
+                    // Not stored, no use in it yet.
+                    const fingerprint = switch (field.value) {
+                        .int_literal => |int_literal| int_literal,
+                        else => |not_a_int| {
+                            field_parsing_events.err(@src(), "Not a integer: {}", .{not_a_int});
+                            return error.InvalidBuildZigZon;
+                        },
+                    };
+                    switch (fingerprint) {
+                        .small => |small| field_parsing_events.debug(@src(), "Valid fingerprint: 0x{x}", .{small}),
+                        .big => |big| field_parsing_events.debug(@src(), "Valid fingerprint: 0x{x}", .{big}),
+                    }
                 },
                 .dependencies => {
                     const dependencies_struct = switch (field.value) {

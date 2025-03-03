@@ -278,7 +278,7 @@ pub fn main() !void {
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
 
-        var project_build_zig_zon_struct: BuildZigZon = try .read(arena, build_zig_zon_loc, file_events);
+        var project_build_zig_zon_struct: BuildZigZon = try .read(arena, zig_process.version, build_zig_zon_loc, file_events);
         defer project_build_zig_zon_struct.deinit(arena);
         break :fetch try .collect(
             gpa,

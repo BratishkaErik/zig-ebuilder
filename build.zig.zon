@@ -2,13 +2,14 @@
 //
 // SPDX-License-Identifier: 0BSD
 .{
-    .name = "zig-ebuilder",
+    .name = .zig_ebuilder,
     .version = "0.0.0",
+    .fingerprint = 0xd3a14801e4afba58,
 
     .dependencies = .{
         .ztl = .{
-            .url = "git+https://github.com/karlseguin/ztl?ref=master#7ab7d73a18d5da3a262456f5f5014b4576df2a50",
-            .hash = "1220dfaa9a62751f07c58d03714e13949459fff55a80cd5a220e9b4b9fd3afaea911",
+            .url = "git+https://github.com/karlseguin/ztl?ref=master#c2ef279cda843f865e41e0139c957afc25ddd70b",
+            .hash = "ztl-0.0.0-XMYgXAjJBACjad2q-qlRgusVcp6aG69Nfg_LSx14_4wq",
         },
     },
     .paths = .{

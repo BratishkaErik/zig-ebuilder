@@ -249,7 +249,7 @@ pub fn collect(
                 const next_file_events = try file_events.child(item.name);
                 defer next_file_events.deinit();
 
-                break :zon try .read(arena, package_build_zig_zon_loc, next_file_events);
+                break :zon try .read(arena, zig_process.version, package_build_zig_zon_loc, next_file_events);
             };
             if (next_build_zig_zon_struct.name.len == 0)
                 next_build_zig_zon_struct.name = item.name;
@@ -285,7 +285,7 @@ pub fn collect(
                                 if ((std.ascii.eqlIgnoreCase(old_uri.scheme, "https") or
                                     std.ascii.eqlIgnoreCase(old_uri.scheme, "http")) and
                                     (std.ascii.eqlIgnoreCase(new_uri.scheme, "git+https") or
-                                    std.ascii.eqlIgnoreCase(new_uri.scheme, "git+http")))
+                                        std.ascii.eqlIgnoreCase(new_uri.scheme, "git+http")))
                                 {
                                     file_events.warn(@src(), "Found 2 package variants with different URIs: tarball and Git commit. Leaving tarball. Tarball variant: {any}, commit variant: {any}", .{
                                         std.json.fmt(old, .{ .whitespace = .indent_2 }),
@@ -295,7 +295,7 @@ pub fn collect(
                                 } else if ((std.ascii.eqlIgnoreCase(old_uri.scheme, "git+https") or
                                     std.ascii.eqlIgnoreCase(old_uri.scheme, "git+http")) and
                                     (std.ascii.eqlIgnoreCase(new_uri.scheme, "https") or
-                                    std.ascii.eqlIgnoreCase(new_uri.scheme, "http")))
+                                        std.ascii.eqlIgnoreCase(new_uri.scheme, "http")))
                                 {
                                     file_events.warn(@src(), "Found 2 package variants with different URIs: Git commit and tarball. Changing to tarball. Commit variant: {any}, tarball variant: {any}", .{
                                         std.json.fmt(old, .{ .whitespace = .indent_2 }),
@@ -408,13 +408,17 @@ pub fn collect(
                 .mach => @panic("unreachable: Hexops do not mirror Git repositories"),
             }
         }
-        // If not a commit, then tarball.
-        else tarball: {
-            try url_writer.print("{s}", .{dep.url});
-            break :tarball FileType.fromPath(dep.url) orelse std.debug.panic("Unknown tarball extension for: {s}", .{dep.url});
-        };
+            // If not a commit, then tarball.
+            else tarball: {
+                try url_writer.print("{s}", .{dep.url});
+                break :tarball FileType.fromPath(dep.url) orelse std.debug.panic("Unknown tarball extension for: {s}", .{dep.url});
+            };
 
-        try name_writer.print("{s}-{s}.{s}", .{ dep.name, hash, @tagName(ext) });
+        if (zig_process.version.kind == .live)
+            // Hash already includes name (if applicable) on 0.14.
+            try name_writer.print("{s}.{s}", .{ hash, @tagName(ext) })
+        else
+            try name_writer.print("{s}-{s}.{s}", .{ dep.name, hash, @tagName(ext) });
 
         array.appendAssumeCapacity(.{
             .name = try name.toOwnedSlice(gpa),

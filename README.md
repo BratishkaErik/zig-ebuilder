@@ -41,7 +41,7 @@ Supported formats are ebuilds for Gentoo-based distros with
 ## Usage
 
 Needs latest master commit version of Zig to compile (tested with
-`0.14.0-dev.2370+5c6b25d9b`), but can be used with 0.13 too at runtime.
+`0.14.0-dev.3460+6d29ef0ba`), but can be used with 0.13 too at runtime.
 
 ```console
 $ zig build
