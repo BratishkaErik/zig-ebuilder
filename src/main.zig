@@ -337,9 +337,6 @@ pub fn main() !void {
                         break :check_hash true;
                 } else break :check_hash false;
             };
-            // TODO need some mechanism for "zig.eclass" maybe?
-            // so that we can make conditional deps here.
-            // For now all dependencies are assumed as used.
             _ = used;
 
             switch (package.kind) {
