@@ -570,7 +570,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version 0.15.0-dev.2+79460d4a3 .
+    // Synced with Zig build runner, version 0.14.0 .
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
