@@ -331,6 +331,7 @@ pub fn main() !void {
 
         try Dependencies.pack_git_commits_to_tarball_tarball(
             archive_arena,
+            zig_process.version,
             dependencies.packages,
             generator_setup.packages,
             memory_writer,
@@ -371,6 +372,8 @@ pub fn main() !void {
         var git_commits: std.ArrayListUnmanaged(DownloadableDependency) = try .initCapacity(arena, dependencies.packages.len);
         defer git_commits.deinit(arena);
 
+        const new_package_hash_format = zig_process.version.newPackageFormat();
+
         for (dependencies.packages) |package| {
             const used = if (report.used_dependencies_hashes) |used_hashes| check_hash: {
                 for (used_hashes) |used_hash| {
@@ -383,22 +386,17 @@ pub fn main() !void {
             // For now all dependencies are assumed as used.
             _ = used;
 
-            const new_package_hash_format = switch (zig_process.version.kind) {
-                .live => true,
-                .release => zig_process.version.sem_ver.order(.{ .major = 0, .minor = 14, .patch = 0 }) != .lt,
-            };
-
             switch (package.kind) {
                 .tarball => |kind| {
                     // New package hash format in 0.14 already has name
-                    const dependency_file_name = if (new_package_hash_format)
-                        try std.fmt.allocPrint(
+                    const dependency_file_name = try if (new_package_hash_format)
+                        std.fmt.allocPrint(
                             arena,
                             "{s}.{s}",
                             .{ package.hash, @tagName(kind) },
                         )
                     else
-                        try std.fmt.allocPrint(
+                        std.fmt.allocPrint(
                             arena,
                             "{s}-{s}.{s}",
                             .{ package.name orelse "pristine_package", package.hash, @tagName(kind) },

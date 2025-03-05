@@ -31,13 +31,24 @@ pub const Version = struct {
     fn parse(raw_string: []const u8) error{ InvalidVersion, Overflow, VersionTooOld }!ZigProcess.Version {
         const sem_ver: std.SemanticVersion = try .parse(raw_string);
 
-        if (sem_ver.order(oldest_supported) == .lt)
+        if (sem_ver.order(oldest_supported).compare(.lt))
             return error.VersionTooOld;
 
         return .{
             .kind = if (sem_ver.pre != null) .live else .release,
             .sem_ver = sem_ver,
             .raw_string = raw_string,
+        };
+    }
+
+    pub fn newPackageFormat(self: Version) bool {
+        // First version to introduce new package format.
+        const min_version: std.SemanticVersion = .{ .major = 0, .minor = 14, .patch = 0 };
+
+        return switch (self.kind) {
+            .live => true,
+            // current >= first
+            .release => self.sem_ver.order(min_version).compare(.gte),
         };
     }
 };

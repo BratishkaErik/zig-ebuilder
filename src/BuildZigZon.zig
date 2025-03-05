@@ -172,10 +172,7 @@ const Parser = struct {
             };
             const top_level_field_type = std.meta.stringToEnum(TopLevelField, field.name) orelse .unknown;
 
-            const new_build_zig_zon_format = switch (self.zig_version.kind) {
-                .live => true,
-                .release => self.zig_version.sem_ver.order(.{ .major = 0, .minor = 14, .patch = 0 }) != .lt,
-            };
+            const new_build_zig_zon_format = self.zig_version.newPackageFormat();
 
             switch (top_level_field_type) {
                 .name => {

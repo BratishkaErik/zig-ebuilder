@@ -308,6 +308,7 @@ fn pack_directory_to_tar_gz(
 /// * dependency_2-hash.tar.gz
 pub fn pack_git_commits_to_tarball_tarball(
     arena: std.mem.Allocator,
+    zig_version: ZigProcess.Version,
     packages: []const Package,
     packages_loc: location.Dir,
     writer: anytype,
@@ -321,6 +322,8 @@ pub fn pack_git_commits_to_tarball_tarball(
     var tar = std.tar.writer(memory_writer);
     tar.mtime_now = 1; // For consistent hashing IIRC.
 
+    const new_package_hash_format = zig_version.newPackageFormat();
+
     for (packages) |package| {
         switch (package.kind) {
             .tarball => continue,
@@ -330,7 +333,11 @@ pub fn pack_git_commits_to_tarball_tarball(
         var package_dir = try packages_loc.dir.openDir(package.hash, .{ .iterate = true });
         defer package_dir.close();
 
-        const file_name = try std.fmt.allocPrint(arena, "{s}-{s}.tar.gz", .{ package.name orelse "pristine_package", package.hash });
+        const file_name = try if (new_package_hash_format)
+            std.fmt.allocPrint(arena, "{s}.tar.gz", .{package.hash})
+        else
+            std.fmt.allocPrint(arena, "{s}-{s}.tar.gz", .{ package.name orelse "pristine_package", package.hash });
+
         events.warn(@src(), "Packing {s} ...", .{file_name});
         const file_content_in_memory = try pack_directory_to_tar_gz(arena, package_dir, compression_level);
 
