@@ -17,10 +17,10 @@ const Level = enum(u2) {
     pub fn description(comptime self: Level) struct { std.io.tty.Color, []const u8 } {
         return switch (self) {
             // zig fmt: off
-            .err =>   .{ .red,    "ERROR__" },
+            .err =>   .{ .red,    "ERROR  " },
             .warn =>  .{ .yellow, "WARNING" },
-            .info =>  .{ .cyan,   "INFO___" },
-            .debug => .{ .green,  "DEBUG__" },
+            .info =>  .{ .cyan,   "INFO   " },
+            .debug => .{ .green,  "DEBUG  " },
             // zig fmt: on
         };
     }
@@ -31,14 +31,20 @@ shared: *const struct {
 },
 scopes: [][]const u8,
 
-pub var global_format: Format = .{};
-
 // Make output more useful for screen readers, diff'ing and so on.
 pub const Format = struct {
-    color: enum { on, off, auto } = .auto,
-    time: enum { none, time, day_time } = .time,
-    src_loc: enum { on, off } = .off,
-    min_level: Level = .info,
+    color: enum { auto, always, never },
+    time_format: enum { none, time, day_time },
+    src_location: enum { always, never },
+    level: Level,
+};
+
+pub var global_format: Format = .{
+    // Default values:
+    .color = .auto,
+    .time_format = .none,
+    .src_location = .never,
+    .level = .info,
 };
 
 pub fn deinit(self: @This()) void {
@@ -66,7 +72,7 @@ fn log(
     comptime spec: []const u8,
     args: anytype,
 ) void {
-    if (@intFromEnum(message_level) > @intFromEnum(global_format.min_level)) return;
+    if (@intFromEnum(message_level) > @intFromEnum(global_format.level)) return;
 
     const stderr = std.io.getStdErr();
 
@@ -74,7 +80,7 @@ fn log(
     defer std.debug.unlockStdErr();
 
     const config: std.io.tty.Config = switch (global_format.color) {
-        .on => config: {
+        .always => config: {
             if (@import("builtin").os.tag == .windows) windows: {
                 if (stderr.isTty() == false) break :windows;
 
@@ -88,17 +94,17 @@ fn log(
 
             break :config .escape_codes;
         },
-        .off => .no_color,
+        .never => .no_color,
         .auto => std.io.tty.detectConfig(stderr),
     };
     var bw = std.io.bufferedWriter(stderr.writer());
     const writer = bw.writer();
 
-    if (global_format.time != .none) {
+    if (global_format.time_format != .none) {
         const time: Timestamp = .now();
 
         config.setColor(writer, .bright_black) catch {};
-        switch (global_format.time) {
+        switch (global_format.time_format) {
             .none => @panic("unreachable (report to upstream of zig-ebuilder)"),
             .time => writer.print("{time}", .{time}) catch {},
             .day_time => writer.print("{[stamp]day} {[stamp]time}", .{ .stamp = time }) catch {},
@@ -113,9 +119,9 @@ fn log(
     config.setColor(writer, .reset) catch {};
     writer.writeByte(' ') catch {};
 
-    switch (global_format.src_loc) {
-        .off => {},
-        .on => {
+    switch (global_format.src_location) {
+        .never => {},
+        .always => {
             config.setColor(writer, .bright_black) catch {};
             writer.print("{s}@{s}:{d}:", .{ src.module, src.file, src.line }) catch {};
             config.setColor(writer, .reset) catch {};

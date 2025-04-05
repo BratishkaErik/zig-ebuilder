@@ -13,7 +13,7 @@ const setup = @import("setup.zig");
 
 const Dependencies = @This();
 pub const Package = @import("Dependencies/Package.zig");
-pub const FetchMode = enum { skip, plain, hashed };
+pub const FetchMode = enum { none, plain, hashed };
 
 /// Value of `name` field in `build.zig.zon`,
 /// or empty if no `build.zig.zon`.
@@ -95,7 +95,7 @@ pub fn collect(
 
         for (dependencies.map.keys(), dependencies.map.values(), 1..) |key, resource, i| {
             switch (fetch_mode) {
-                .skip => @panic("unreachable"),
+                .none => @panic("unreachable"),
                 .hashed, .plain => {},
             }
 

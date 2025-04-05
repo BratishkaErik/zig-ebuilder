@@ -16,35 +16,49 @@ const location = @import("location.zig");
 const reporter = @import("reporter.zig");
 const setup = @import("setup.zig");
 
-const version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 1 };
+const version: std.SemanticVersion = .{ .major = 0, .minor = 1, .patch = 0 };
 
 fn printHelp(writer: std.io.AnyWriter) void {
     writer.print(
-        \\Usage: {[prog_name]s} [flags] <path>
+        \\zig-ebuilder {[version]}
+        \\System package managers specification generator for Zig projects.
         \\
-        \\Flags:
-        \\    --help                             Print this help
+        \\USAGE:
+        \\    {[prog_name]s} [OPTIONS] [path-to-project]
         \\
-        \\    --zig=[path]                       Specify Zig executable to use
-        \\    --color=[on|off|auto]              Whether to use color in logs
-        \\    --time=[none|time|day_time]        Whether to print "time" or "day and time" in logs
-        \\    --src_loc=[on|off]                 Whether to print source location in logs
-        \\    --min_level=[err|warn|info|debug]  Severity of printed logs
+        \\ARGUMENTS:
+        \\    [path-to-project]             build.zig file, or directory containing it
+        \\                                  (default: current directory)
         \\
-        \\    --zig_build_additional_args [...]  Additional args to pass for "zig build" verbatim
-        \\    --fetch=[skip|plain|hashed]        Choose method for fetching: none, plain, or hashed (requires patch)
-        \\    --custom_template=[path]           Specify custom ZTL template to use for generating ebuild
+        \\GENERATOR OPTIONS:
+        \\    --fetch <strategy>            Dependency resolution strategy (default: plain)
+        \\                                  (possible values: none, plain, hashed)
+        \\    --template <template>         Specify ZTL template to use (default: gentoo.ebuild)
+        \\                                  (possible values: gentoo.ebuild, [custom file path])
         \\
-        \\ <path> should be a build.zig file, or directory containing it;
-        \\ if none is provided, defaults to current working directory.
+        \\ZIG OPTIONS:
+        \\    --zig <path-to-exe>           Path to Zig executable (default: get from PATH)
+        \\    --zig-build-args <args>...    Additional arguments for "zig build"
         \\
-        \\ If "build.zig.zon" file is found nearby, `zig-ebuilder` will fetch all dependencies
-        \\ (eagerly and recursively), and fill ZBS_DEPENDENCIES array.
+        \\LOGGING OPTIONS:
+        \\    --log-level <level>           Minimum logging level (default: info)
+        \\                                  (possible values: err, warn, info, debug)
+        \\    --log-time-format <format>    Show time in this format (default: none)
+        \\                                  (possible values: none, time, day_time)
+        \\    --log-color <when>            Color output mode (default: auto)
+        \\                                  (possible values: auto, always, never)
+        \\    --log-src-location <when>     Show source location (default: never)
+        \\                                  (possible values: always, never)
         \\
-        \\ Arguments for "zig build" may be useful if you want to enable some option that will link
-        \\ system library and so show it in report by generator, if it's required to pass etc.
+        \\GENERAL OPTIONS:
+        \\    --help                        Display this help and exit
         \\
-    , .{ .prog_name = global.prog_name }) catch {};
+        \\NOTES:
+        \\ * If "build.zig.zon" file exist, dependencies will be
+        \\ resolved from it according to the `--fetch` strategy.
+        \\ * 'hashed' fetch strategy needs Zig patching, see README for more info.
+        \\
+    , .{ .version = version, .prog_name = global.prog_name }) catch {};
 }
 
 var global: struct {
@@ -84,48 +98,51 @@ pub fn main() !void {
     const stdout = stdout_file.writer().any();
     const stderr = stderr_file.writer().any();
 
-    stderr.print("Starting {s} {}\n", .{ global.prog_name, version }) catch {};
-
     var zig_build_additional_args: [][:0]const u8 = &.{};
     defer gpa.free(zig_build_additional_args);
 
     var optional_custom_template_path: ?[:0]const u8 = null;
     var file_name: ?[:0]const u8 = null;
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            printHelp(stdout);
-            return;
-        } else if (std.mem.startsWith(u8, arg, "--zig=")) {
-            const text = arg["--zig=".len..];
-            global.zig_executable = if (text.len != 0) text else {
-                stderr.print("Expected non-empty path to \"zig\" binary\n", .{}) catch {};
+        // Generator options.
+        if (std.mem.eql(u8, arg, "--fetch")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --fetch option\n") catch {};
                 return;
             };
-        } else if (std.mem.startsWith(u8, arg, "--color=")) {
-            const text = arg["--color=".len..];
-            Logger.global_format.color = std.meta.stringToEnum(@FieldType(Logger.Format, "color"), text) orelse {
-                stderr.print("Expected [on|off|auto] in \"{s}\", found \"{s}\"\n", .{ arg, text }) catch {};
+            const fetch_strategy = std.meta.stringToEnum(Dependencies.FetchMode, value) orelse {
+                stderr.print("Invalid fetch strategy '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: none, plain, hashed\n") catch {};
                 return;
             };
-        } else if (std.mem.startsWith(u8, arg, "--time=")) {
-            const text = arg["--time=".len..];
-            Logger.global_format.time = std.meta.stringToEnum(@FieldType(Logger.Format, "time"), text) orelse {
-                stderr.print("Expected [none|time|day_time] in \"{s}\", found \"{s}\"\n", .{ arg, text }) catch {};
+            global.fetch_mode = fetch_strategy;
+        } else if (std.mem.eql(u8, arg, "--template")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --template option\n") catch {};
                 return;
             };
-        } else if (std.mem.startsWith(u8, arg, "--src_loc=")) {
-            const text = arg["--src_loc=".len..];
-            Logger.global_format.src_loc = std.meta.stringToEnum(@FieldType(Logger.Format, "src_loc"), text) orelse {
-                stderr.print("Expected [on|off] in \"{s}\", found \"{s}\"\n", .{ arg, text }) catch {};
+
+            if (std.mem.eql(u8, value, "gentoo.ebuild")) {
+                // TODO change this when other distros are added.
+                optional_custom_template_path = null;
+            } else if (value.len > 0) {
+                optional_custom_template_path = value;
+            } else {
+                stderr.print("Invalid template '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: gentoo.ebuild, or provide non-empty path\n") catch {};
+            }
+        }
+        // Zig options.
+        else if (std.mem.eql(u8, arg, "--zig")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --zig option\n") catch {};
                 return;
             };
-        } else if (std.mem.startsWith(u8, arg, "--min_level=")) {
-            const text = arg["--min_level=".len..];
-            Logger.global_format.min_level = std.meta.stringToEnum(@FieldType(Logger.Format, "min_level"), text) orelse {
-                stderr.print("Expected [err|warn|info|debug] in \"{s}\", found \"{s}\"\n", .{ arg, text }) catch {};
+            global.zig_executable = if (value.len != 0) value else {
+                stderr.writeAll("Expected non-empty path after --zig option\n") catch {};
                 return;
             };
-        } else if (std.mem.eql(u8, arg, "--zig_build_additional_args")) {
+        } else if (std.mem.eql(u8, arg, "--zig-build-args")) {
             var additional_args: std.ArrayListUnmanaged([:0]const u8) = .empty;
             errdefer additional_args.deinit(gpa);
             while (args.next()) |zig_build_arg| {
@@ -136,22 +153,60 @@ pub fn main() !void {
                 return;
             }
             zig_build_additional_args = try additional_args.toOwnedSlice(gpa);
-        } else if (std.mem.startsWith(u8, arg, "--fetch=")) {
-            const text = arg["--fetch=".len..];
-            global.fetch_mode = std.meta.stringToEnum(Dependencies.FetchMode, text) orelse {
-                stderr.print("Expected [skip|plain|hashed] in \"{s}\", found \"{s}\"\n", .{ arg, text }) catch {};
+        }
+        // Logging options.
+        else if (std.mem.eql(u8, arg, "--log-level")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --log-level option\n") catch {};
                 return;
             };
-        } else if (std.mem.startsWith(u8, arg, "--custom_template=")) {
-            const text = arg["--custom_template=".len..];
-            optional_custom_template_path = if (text.len != 0) text else {
-                stderr.print("Expected non-empty path to custom template\n", .{}) catch {};
+            const level = std.meta.stringToEnum(@FieldType(Logger.Format, "level"), value) orelse {
+                stderr.print("Invalid log level '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: err, warn, info, debug\n") catch {};
                 return;
             };
+            Logger.global_format.level = level;
+        } else if (std.mem.eql(u8, arg, "--log-time-format")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --log-time-format option\n") catch {};
+                return;
+            };
+            const time_format = std.meta.stringToEnum(@FieldType(Logger.Format, "time_format"), value) orelse {
+                stderr.print("Invalid log time format '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: none, time, day_time\n") catch {};
+                return;
+            };
+            Logger.global_format.time_format = time_format;
+        } else if (std.mem.eql(u8, arg, "--log-color")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --log-color option\n") catch {};
+                return;
+            };
+            const color = std.meta.stringToEnum(@FieldType(Logger.Format, "color"), value) orelse {
+                stderr.print("Invalid log color mode '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: auto, always, never\n") catch {};
+                return;
+            };
+            Logger.global_format.color = color;
+        } else if (std.mem.eql(u8, arg, "--log-src-location")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --log-src-location option\n") catch {};
+                return;
+            };
+            const src_location = std.meta.stringToEnum(@FieldType(Logger.Format, "src_location"), value) orelse {
+                stderr.print("Invalid log source location mode '{s}'\n", .{value}) catch {};
+                stderr.writeAll("Choose one of: always, never\n") catch {};
+                return;
+            };
+            Logger.global_format.src_location = src_location;
+        }
+        // General options.
+        else if (std.mem.eql(u8, arg, "--help")) {
+            printHelp(stdout);
+            return;
         } else {
             if (file_name) |previous_path| {
-                stderr.print("More than 1 path at same time specified: \"{s}\" and \"{s}\".", .{ previous_path, arg }) catch {};
-                stderr.writeAll("If you wanted to pass option, please make sure that '=' symbols are reproduced exactly as written in \"--help\".\n") catch {};
+                stderr.print("More than 1 projects specified at the same time: \"{s}\" and \"{s}\".", .{ previous_path, arg }) catch {};
                 return;
             }
             file_name = arg;
@@ -162,6 +217,9 @@ pub fn main() !void {
         .shared = &.{ .scretch_pad = gpa },
         .scopes = &.{},
     };
+
+    main_log.info(@src(), "Starting {s} {}", .{ global.prog_name, version });
+
     var file_events = try main_log.child("file");
     defer file_events.deinit();
     var file_searching_events = try file_events.child("searching");
@@ -262,7 +320,7 @@ pub fn main() !void {
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
-    const dependencies: Dependencies = if (global.fetch_mode != .skip) fetch: {
+    const dependencies: Dependencies = if (global.fetch_mode != .none) fetch: {
         const build_zig_zon_loc = if (project_setup.build_zig_zon) |build_zig_zon| build_zig_zon else {
             file_searching_events.err(@src(), "\"build.zig.zon\" was not found. Skipping fetching.", .{});
             break :fetch .empty;

@@ -137,7 +137,7 @@ pub fn fetch(
             .local => {},
         },
         .plain => {},
-        .skip => @panic("unreachable"),
+        .none => @panic("unreachable"),
     }
 
     events.debug(@src(), "Running command: cd \"{!s}\" && {s}", .{ cwd.string, argv.items });
