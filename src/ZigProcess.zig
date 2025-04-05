@@ -71,10 +71,13 @@ pub fn init(
         .max_output_bytes = 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => {
-            events.err(@src(), "Zig executable \"{s}\" not found. Aborting.", .{exe_path});
+            events.err(@src(), "Zig executable '{s}' not found. Aborting.", .{exe_path});
             return err;
         },
-        else => return err,
+        else => {
+            events.err(@src(), "Error when callng Zig executable '{s}': {s}. Aborting.", .{ exe_path, @errorName(err) });
+            return err;
+        },
     };
     defer {
         allocator.free(result_of_zig_version.stderr);
