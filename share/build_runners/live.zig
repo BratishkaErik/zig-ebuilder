@@ -570,7 +570,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version 0.15.0-dev.2+79460d4a3 .
+    // Synced with Zig build runner, version 0.15.0-dev.246+0cd31fc7f .
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -1445,7 +1445,9 @@ fn usage(b: *std.Build, out_stream: anytype) !void {
         \\  -j<N>                        Limit concurrent jobs (default is to use all CPU cores)
         \\  --maxrss <bytes>             Limit memory usage (default is to use available memory)
         \\  --skip-oom-steps             Instead of failing, skip steps that would exceed --maxrss
-        \\  --fetch                      Exit after fetching dependency tree
+        \\  --fetch[=mode]               Fetch dependency tree (optionally choose laziness) and exit
+        \\    needed                     (Default) Lazy dependencies are fetched as needed
+        \\    all                        Lazy dependencies are always fetched
         \\  --watch                      Continuously rebuild when source files are modified
         \\  --fuzz                       Continuously search for unit test failures
         \\  --debounce <ms>              Delay before rebuilding after changed file detected
@@ -1646,6 +1648,7 @@ fn createModuleDependenciesForStep(step: *Step) Allocator.Error!void {
             .path_after,
             .framework_path,
             .framework_path_system,
+            .embed_path,
             => |lp| lp.addStepDependencies(step),
 
             .other_step => |other| {
