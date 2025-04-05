@@ -33,25 +33,16 @@ fn printHelp(writer: std.io.AnyWriter) void {
         \\
         \\    --zig_build_additional_args [...]  Additional args to pass for "zig build" verbatim
         \\    --fetch=[skip|plain|hashed]        Choose method for fetching: none, plain, or hashed (requires patch)
-        \\    --custom_template=[path]           Specify custom Mustache template to use for generating ebuild
+        \\    --custom_template=[path]           Specify custom ZTL template to use for generating ebuild
         \\
         \\ <path> should be a build.zig file, or directory containing it;
         \\ if none is provided, defaults to current working directory.
         \\
-        \\ If it has a build.zig.zon file nearby, `zig-ebuilder` will fetch all dependencies eagerly
-        \\ and recursively, and fill ZBS_DEPENDENCIES array. If such file does not exist, array will be empty.
+        \\ If "build.zig.zon" file is found nearby, `zig-ebuilder` will fetch all dependencies
+        \\ (eagerly and recursively), and fill ZBS_DEPENDENCIES array.
         \\
         \\ Arguments for "zig build" may be useful if you want to enable some option that will link
         \\ system library and so show it in report by generator, if it's required to pass etc.
-        \\
-        \\ Fetch methods: "skip" is none, "plain" is regular `zig fetch`, "hashed" is `zig fetch` with patch
-        \\ https://github.com/ziglang/zig/pull/21589 . By default it is "plain" for all Zig versions.
-        \\
-        \\ **Warning**: if you want to make fetching fast by using "--fetch=hashed",
-        \\ please patch your dev-lang/zig:9999 using /etc/portage/patches/ and link above
-        \\ and put it there. This will make fetching instantenous if you have already\
-        \\ fetched dependencies previously, otherwise "zig fetch" would initiate
-        \\ connections to verify content. More details in that PR.
         \\
     , .{ .prog_name = global.prog_name }) catch {};
 }
