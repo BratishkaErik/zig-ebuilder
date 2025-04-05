@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: 0BSD
 .{
     .name = .zig_ebuilder,
-    .version = "0.0.0",
-    .fingerprint = 0xd3a14801e4afba58,
+    .version = "0.2.0",
+    .fingerprint = 0xd3a14801_e4afba58,
 
     .dependencies = .{
         .ztl = .{
