@@ -6,6 +6,7 @@
     .version = "0.2.0",
     .fingerprint = 0xd3a14801_e4afba58,
 
+    .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .ztl = .{
             .url = "git+https://github.com/karlseguin/ztl?ref=master#c2ef279cda843f865e41e0139c957afc25ddd70b",
