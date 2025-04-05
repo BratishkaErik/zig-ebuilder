@@ -29,7 +29,8 @@ directory, and path is printed to the user.
 > (for authors and users) and wait for resolution of
 > https://github.com/ziglang/zig/issues/14342.
 
-Result is then print to STDOUT.
+Result is then written to the file or STDOUT (you can set file name
+explicitly or let zig-ebuilder fill it for you).
 
 Supported formats are ebuilds for Gentoo-based distros with
 `zig.eclass` (see https://github.com/gentoo/gentoo/pull/37283).
@@ -61,7 +62,7 @@ $ zig-ebuilder [options] <path-to-project>
 Example for https://github.com/natecraddock/zf:
 
 ```console
-$ zig-ebuilder --zig /usr/bin/zig-0.13.0 . > zf-0.10.2.ebuild
+$ zig-ebuilder --zig /usr/bin/zig-0.13.0 .
 ```
 
 ```bash

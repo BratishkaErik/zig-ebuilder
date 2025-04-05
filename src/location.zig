@@ -30,6 +30,14 @@ pub const Dir = struct {
         return .{ .string = string, .dir = dir };
     }
 
+    pub fn createFile(self: location.Dir, allocator: std.mem.Allocator, path: []const u8) (error{OutOfMemory} || std.fs.File.OpenError)!location.File {
+        const string = try std.fs.path.join(allocator, &.{ self.string, path });
+        errdefer allocator.free(string);
+
+        const file = try self.dir.createFile(path, .{});
+        return .{ .string = string, .file = file };
+    }
+
     pub fn makeOpenDir(self: location.Dir, allocator: std.mem.Allocator, path: []const u8) (error{OutOfMemory} || std.fs.Dir.MakeError || std.fs.Dir.OpenError || std.fs.Dir.StatFileError)!location.Dir {
         const string = try std.fs.path.join(allocator, &.{ self.string, path });
         errdefer allocator.free(string);

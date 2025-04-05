@@ -33,8 +33,11 @@ fn printHelp(writer: std.io.AnyWriter) void {
         \\GENERATOR OPTIONS:
         \\    --fetch <strategy>            Dependency resolution strategy (default: plain)
         \\                                  (possible values: none, plain, hashed)
-        \\    --template <template>         Specify ZTL template to use (default: gentoo.ebuild)
+        \\    --template <template>         ZTL template to use (default: gentoo.ebuild)
         \\                                  (possible values: gentoo.ebuild, [custom file path])
+        \\    --output-file <path>          Output file (default: depends on project's name and version)
+        \\                                  Warning: overwrites file if already exists.
+        \\                                  Note: "-" means "output to STDOUT"
         \\
         \\ZIG OPTIONS:
         \\    --zig <path-to-exe>           Path to Zig executable (default: get from PATH)
@@ -101,8 +104,19 @@ pub fn main() !void {
     var zig_build_additional_args: [][:0]const u8 = &.{};
     defer gpa.free(zig_build_additional_args);
 
+    const cwd: location.Dir = .cwd();
     var optional_custom_template_path: ?[:0]const u8 = null;
     var file_name: ?[:0]const u8 = null;
+
+    var output_file: ?union(enum) {
+        stdout,
+        file: location.File,
+    } = null;
+    defer switch (output_file orelse .stdout) {
+        .stdout => {},
+        .file => |file| file.deinit(gpa),
+    };
+
     while (args.next()) |arg| {
         // Generator options.
         if (std.mem.eql(u8, arg, "--fetch")) {
@@ -131,6 +145,19 @@ pub fn main() !void {
                 stderr.print("Invalid template '{s}'\n", .{value}) catch {};
                 stderr.writeAll("Choose one of: gentoo.ebuild, or provide non-empty path\n") catch {};
             }
+        } else if (std.mem.eql(u8, arg, "--output-file")) {
+            const value = args.next() orelse {
+                stderr.writeAll("Missing value for --output-file option\n") catch {};
+                return;
+            };
+
+            output_file = if (std.mem.eql(u8, value, "-"))
+                .stdout
+            else
+                .{ .file = cwd.createFile(gpa, value) catch |err| {
+                    stderr.print("Error when creating output file '{s}': {s}\n", .{ value, @errorName(err) }) catch {};
+                    return;
+                } };
         }
         // Zig options.
         else if (std.mem.eql(u8, arg, "--zig")) {
@@ -222,8 +249,6 @@ pub fn main() !void {
 
     var setup_events = try main_log.child("setup");
     defer setup_events.deinit();
-
-    const cwd: location.Dir = .cwd();
 
     const initial_file_path: []const u8 = if (file_name) |path| blk: {
         const stat = cwd.dir.statFile(path) catch |err| {
@@ -503,20 +528,56 @@ pub fn main() !void {
     };
     defer gpa.free(context.generator_version);
 
-    main_log.info(@src(), "Generating ebuild and writing to STDOUT...", .{});
+    if (output_file == null) {
+        main_log.warn(@src(), "\"--output-file\" option was not passed, trying to generate file name...", .{});
+
+        const project_name = if (dependencies.root_package_name.len > 0)
+            dependencies.root_package_name
+        else
+            "unknown";
+        const project_version = if (dependencies.root_package_version.len > 0)
+            dependencies.root_package_version
+        else
+            "0.0.0";
+
+        const name = try std.fmt.allocPrint(arena, "{s}-{s}.ebuild", .{ project_name, project_version });
+        for (name[0..dependencies.root_package_name.len]) |*c|
+            switch (c.*) {
+                '_' => c.* = '-',
+                else => {},
+            };
+
+        main_log.warn(@src(), "Generated file name: '{s}'", .{name});
+        output_file = .{ .file = cwd.createFile(gpa, name) catch |err| {
+            main_log.err(@src(), "Error when creating output file '{s}': {s}\n", .{ name, @errorName(err) });
+            return;
+        } };
+    }
 
     var render_errors: ztl.RenderErrorReport = .{};
     defer render_errors.deinit();
 
-    template.render(stdout, context, .{ .error_report = &render_errors }) catch |err| {
-        main_log.err(@src(), "Error when generating ebuild: {s} caused by: {}", .{
+    const output_writer = switch (output_file.?) {
+        .file => |file| file: {
+            main_log.info(@src(), "Writing ebuild to '{s}'...", .{file.string});
+            break :file file.file.writer().any();
+        },
+        .stdout => stdout: {
+            main_log.info(@src(), "Writing ebuild to the STDOUT...", .{});
+            break :stdout stdout;
+        },
+    };
+
+    template.render(output_writer, context, .{ .error_report = &render_errors }) catch |err| {
+        main_log.err(@src(), "Error when writing ebuild: {s} caused by: {}", .{
             @errorName(err),
             render_errors,
         });
         return error.InvalidTemplate;
     };
 
-    main_log.info(@src(), "Generated ebuild was written to STDOUT.", .{});
+    main_log.info(@src(), "Ebuild was generated successfully.", .{});
+
     if (optional_tarball_tarball) |tarball_tarball_path| {
         main_log.warn(@src(), "Note: it appears your project has Git commit dependencies that generator was unable to convert.", .{});
         main_log.warn(@src(), "Please host \"{s}\" somewhere and add it to SRC_URI.", .{tarball_tarball_path});
