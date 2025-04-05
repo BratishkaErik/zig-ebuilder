@@ -220,10 +220,8 @@ pub fn main() !void {
 
     main_log.info(@src(), "Starting {s} {}", .{ global.prog_name, version });
 
-    var file_events = try main_log.child("file");
-    defer file_events.deinit();
-    var file_searching_events = try file_events.child("searching");
-    defer file_searching_events.deinit();
+    var setup_events = try main_log.child("setup");
+    defer setup_events.deinit();
 
     const cwd: location.Dir = .cwd();
 
@@ -231,10 +229,10 @@ pub fn main() !void {
         const stat = cwd.dir.statFile(path) catch |err| {
             switch (err) {
                 error.FileNotFound => {
-                    file_searching_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
+                    setup_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
                 },
                 else => |e| {
-                    file_searching_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
+                    setup_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
                 },
             }
             return err;
@@ -242,15 +240,15 @@ pub fn main() !void {
 
         switch (stat.kind) {
             .file => {
-                file_searching_events.info(@src(), "\"{s}\" is a file, trying to open it...", .{path});
+                setup_events.info(@src(), "\"{s}\" is a file, trying to open it...", .{path});
                 break :blk try gpa.dupe(u8, path);
             },
             .directory => {
-                file_searching_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
+                setup_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
                 break :blk try std.fs.path.join(gpa, &.{ path, "build.zig" });
             },
             .sym_link => {
-                file_searching_events.err(@src(), "Can't resolve symlink \"{s}\".", .{path});
+                setup_events.err(@src(), "Can't resolve symlink \"{s}\".", .{path});
                 return error.FileNotFound;
             },
             //
@@ -263,12 +261,12 @@ pub fn main() !void {
             .event_port,
             .unknown,
             => |tag| {
-                file_searching_events.err(@src(), "\"{s}\" is not a file or directory, but instead it's \"{s}\".", .{ path, @tagName(tag) });
+                setup_events.err(@src(), "\"{s}\" is not a file or directory, but instead it's \"{s}\".", .{ path, @tagName(tag) });
                 return error.FileNotFound;
             },
         }
     } else cwd: {
-        file_searching_events.info(@src(), "No location given, trying to open \"build.zig\" in current directory...", .{});
+        setup_events.info(@src(), "No location given, trying to open \"build.zig\" in current directory...", .{});
         break :cwd try gpa.dupe(u8, "build.zig");
     };
     defer gpa.free(initial_file_path);
@@ -277,27 +275,27 @@ pub fn main() !void {
         cwd,
         initial_file_path,
         gpa,
-        file_searching_events,
+        setup_events,
     );
     defer project_setup.deinit(gpa);
 
-    file_searching_events.info(@src(), "Successfully found \"build.zig\" file!", .{});
+    setup_events.info(@src(), "Successfully found \"build.zig\" file!", .{});
 
-    const zig_process = try ZigProcess.init(gpa, cwd, global.zig_executable, &env_map, main_log);
+    const zig_process = try ZigProcess.init(gpa, cwd, global.zig_executable, &env_map, setup_events);
     defer gpa.free(zig_process.version.raw_string);
 
-    var generator_setup: setup.Generator = try .makeOpen(cwd, env_map, gpa, main_log);
+    var generator_setup: setup.Generator = try .makeOpen(cwd, env_map, gpa, setup_events);
     defer generator_setup.deinit(gpa);
 
     const template_text = if (optional_custom_template_path) |custom_template_path|
         cwd.dir.readFileAlloc(gpa, custom_template_path, 1 * 1024 * 1024) catch |err| {
-            file_searching_events.err(@src(), "Error when searching custom template: {s} caused by \"{s}\".", .{ @errorName(err), custom_template_path });
+            setup_events.err(@src(), "Error when searching custom template: {s} caused by \"{s}\".", .{ @errorName(err), custom_template_path });
 
             return error.InvalidTemplate;
         }
     else
         generator_setup.templates.dir.readFileAlloc(gpa, "gentoo.ebuild.ztl", 1 * 1024 * 1024) catch |err| {
-            file_searching_events.err(@src(), "Error when searching default \"gentoo\" template: \"{s}\".", .{@errorName(err)});
+            setup_events.err(@src(), "Error when searching gentoo.ebuild template: \"{s}\".", .{@errorName(err)});
 
             return error.InvalidTemplate;
         };
@@ -308,7 +306,7 @@ pub fn main() !void {
 
     var template_errors: ztl.CompileErrorReport = .{};
     template.compile(template_text, .{ .error_report = &template_errors }) catch |err| {
-        file_searching_events.err(@src(), "Error when loading file: {s} caused by \"{s}\": {}", .{
+        setup_events.err(@src(), "Error when loading template: {s} caused by \"{s}\": {}", .{
             @errorName(err),
             if (optional_custom_template_path) |custom_template_path| custom_template_path else "(default template)",
             template_errors,
@@ -321,13 +319,16 @@ pub fn main() !void {
     const arena = arena_instance.allocator();
 
     const dependencies: Dependencies = if (global.fetch_mode != .none) fetch: {
+        var fetch_events = try main_log.child("fetch");
+        defer fetch_events.deinit();
+
         const build_zig_zon_loc = if (project_setup.build_zig_zon) |build_zig_zon| build_zig_zon else {
-            file_searching_events.err(@src(), "\"build.zig.zon\" was not found. Skipping fetching.", .{});
+            fetch_events.err(@src(), "\"build.zig.zon\" was not found. Skipping fetching.", .{});
             break :fetch .empty;
         };
-        file_searching_events.info(@src(), "Found \"build.zig.zon\" file nearby, proceeding to fetch dependencies.", .{});
+        fetch_events.info(@src(), "Found \"build.zig.zon\" file nearby, proceeding to fetch dependencies.", .{});
 
-        const project_build_zig_zon_struct: BuildZigZon = try .read(arena, zig_process.version, build_zig_zon_loc, file_events);
+        const project_build_zig_zon_struct: BuildZigZon = try .read(arena, zig_process.version, build_zig_zon_loc, fetch_events);
         break :fetch try .collect(
             gpa,
             arena,
@@ -335,14 +336,15 @@ pub fn main() !void {
             project_setup,
             project_build_zig_zon_struct,
             generator_setup,
-            file_events,
+            fetch_events,
             global.fetch_mode,
             zig_process,
         );
     } else .empty;
     defer dependencies.deinit(gpa);
 
-    file_events.debug(
+    main_log.info(@src(), "Packages count: {d}", .{dependencies.packages.len});
+    main_log.debug(
         @src(),
         "packages = {}",
         .{std.json.fmt(dependencies.packages, .{ .whitespace = .indent_4 })},
@@ -396,7 +398,6 @@ pub fn main() !void {
         break :path try std.fs.path.join(arena, &.{ tarballs_loc.string, tarball_tarball_path });
     } else null;
 
-    main_log.info(@src(), "Running \"zig build\" with custom build runner. Arguments are in DEBUG.", .{});
     const report: Report = try reporter.collect(
         gpa,
         //
@@ -485,10 +486,6 @@ pub fn main() !void {
             .git_commits = try git_commits.toOwnedSlice(arena),
         };
     };
-    main_log.info(@src(), "Used tarballs: {d}, used git commits: {d}", .{
-        downloadable_dependencies.tarball.len,
-        downloadable_dependencies.git_commits.len,
-    });
 
     const context = .{
         .generator_version = try std.fmt.allocPrint(gpa, "{}", .{version}),
@@ -506,13 +503,13 @@ pub fn main() !void {
     };
     defer gpa.free(context.generator_version);
 
-    main_log.info(@src(), "Writing generated ebuild to STDOUT...", .{});
+    main_log.info(@src(), "Generating ebuild and writing to STDOUT...", .{});
 
     var render_errors: ztl.RenderErrorReport = .{};
     defer render_errors.deinit();
 
     template.render(stdout, context, .{ .error_report = &render_errors }) catch |err| {
-        file_searching_events.err(@src(), "Error when rendering template: {s} caused by: {}", .{
+        main_log.err(@src(), "Error when generating ebuild: {s} caused by: {}", .{
             @errorName(err),
             render_errors,
         });
@@ -520,9 +517,8 @@ pub fn main() !void {
     };
 
     main_log.info(@src(), "Generated ebuild was written to STDOUT.", .{});
-    main_log.info(@src(), "Note (if using default template): license header there (with \"Gentoo Authors\" and GNU GPLv2) is just an convenience default for making ebuilds for ::gentoo and ::guru repos easier, you can relicense output however you want.", .{});
-
     if (optional_tarball_tarball) |tarball_tarball_path| {
-        main_log.warn(@src(), "Note: it appears your project has Git commit dependencies that generator was unable to convert, please host \"{s}\" somewhere and add it to SRC_URI.", .{tarball_tarball_path});
+        main_log.warn(@src(), "Note: it appears your project has Git commit dependencies that generator was unable to convert.", .{});
+        main_log.warn(@src(), "Please host \"{s}\" somewhere and add it to SRC_URI.", .{tarball_tarball_path});
     }
 }

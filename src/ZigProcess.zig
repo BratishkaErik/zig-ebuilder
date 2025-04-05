@@ -178,7 +178,10 @@ pub fn build(
     });
     try argv.appendSlice(allocator, args.additional);
 
-    events.debug(@src(), "Running command: cd \"{!s}\" && {s}", .{ project_setup.root.string, argv.items });
+    events.info(@src(), "Collecting information about project using \"zig build\"...", .{});
+    if (args.additional.len > 0)
+        events.info(@src(), "Additional args: {s}", .{args.additional});
+
     return try std.process.Child.run(.{
         .allocator = allocator,
         .argv = argv.items,

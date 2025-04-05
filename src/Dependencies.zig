@@ -216,7 +216,6 @@ pub fn collect(
             }
         }
     }
-    file_events.info(@src(), "Packages count: {d}", .{packages.count()});
 
     // Mutate `packages` in-place to transform Git commits to
     // tarballs where possible (and algorithm is known).

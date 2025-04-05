@@ -86,17 +86,24 @@ pub fn collect(
             .Signal, .Stopped, .Unknown => {},
         }
 
-        main_log.err(@src(), "\"zig build\" exited with following code: {}. Possible reasons: crash in build.zig logic, invalid passed arguments etc. Try to pass additional arguments using \"--zig_build_additional_args\", and re-run the generator.", .{result_of_zig_build_runner.term});
+        main_log.err(@src(), "\"zig build\" exited with following code: {}", .{result_of_zig_build_runner.term});
+        main_log.err(@src(), "Possible reasons: crash in build.zig logic, invalid passed arguments etc.", .{});
+        main_log.err(@src(), "Try to pass additional arguments using \"--zig-build-args\", or choose correct Zig version.", .{});
     }
 
-    main_log.info(@src(), "Output of \"zig build\":", .{});
-    main_log.info(@src(), "STDERR: {s}", .{result_of_zig_build_runner.stderr});
-    main_log.info(@src(), "STDOUT: {s}", .{result_of_zig_build_runner.stdout});
+    if (result_of_zig_build_runner.stdout.len > 0 or result_of_zig_build_runner.stderr.len > 0) {
+        main_log.info(@src(), "Output of \"zig build\":", .{});
+        if (result_of_zig_build_runner.stderr.len > 0)
+            main_log.info(@src(), "STDERR:\n{s}", .{result_of_zig_build_runner.stderr});
+        if (result_of_zig_build_runner.stdout.len > 0)
+            main_log.info(@src(), "STDOUT:\n{s}", .{result_of_zig_build_runner.stdout});
+    }
 
+    main_log.info(@src(), "Sending report to server...", .{});
     // Blocks thread
-    lock.timedWait(5 * std.time.ns_per_s) catch |err| switch (err) {
+    lock.timedWait(1 * std.time.ns_per_s) catch |err| switch (err) {
         error.Timeout => {
-            main_log.err(@src(), "Timeout: no report from \"zig build\" for 5 seconds, aborting.", .{});
+            main_log.err(@src(), "Timeout: no report from \"zig build\" for 1 seconds, aborting.", .{});
             return error.Timeout;
         },
     };
@@ -150,20 +157,22 @@ pub fn collect(
     errdefer arena.free(filtered_options);
 
     if (options_status.missing_options.count() != 0) {
-        main_log.err(@src(), "Package does not have following options ({d}/{d}), which are critical for zig-ebuild.eclass:", .{ options_status.missing_options.count(), options_status.missing_options.bits.capacity() });
+        main_log.err(@src(), "Some recommended build options are missing from project.", .{});
+        main_log.err(@src(), "Only {d} from {d} are present. Missing options:", .{ options_status.missing_options.count(), options_status.missing_options.bits.capacity() });
+
         var missing_options = options_status.missing_options.iterator();
-        while (missing_options.next()) |missing_option| main_log.err(@src(), " * {s}", .{@tagName(missing_option)});
-        main_log.err(@src(), "Fix this using preferred patch way, and then re-run generator.", .{});
+        while (missing_options.next()) |missing_option|
+            main_log.err(@src(), " * {s}", .{@tagName(missing_option)});
     }
     switch (options_status.optimize) {
         .all => {},
         .none => {
-            main_log.warn(@src(), "Package does not have \"optimize\" enum, but it has \"release\" boolean option instead. This also means that \"--release=\" option is ignored.", .{});
-            main_log.warn(@src(), "If it has any compilable artifacts (executable, libraries etc.), please fix this using preferred patch way, and then re-run generator, otherwise ignore this warning.", .{});
+            main_log.err(@src(), "Project does not have standard \"optimize\" option.", .{});
         },
         .explicit => {
-            main_log.warn(@src(), "Package does not have \"optimize\" enum, but it has \"release\" boolean option instead. This also means that \"--release=(anything except \"off\")\" option is equivalent to \"-Drelease=true\".", .{});
-            main_log.warn(@src(), "For end user executables it may be fine, but if it has other compilable artifacts (libraries etc.) or modules, please fix this using preferred patch way, and then re-run generator, otherwise ignore this warning.", .{});
+            main_log.warn(@src(), "Project does not have standard \"optimize\" option.", .{});
+            main_log.warn(@src(), "It has boolean \"release\" option instead.", .{});
+            main_log.warn(@src(), "Compilation is limited to 2 optimize modes.", .{});
         },
     }
 
