@@ -30,7 +30,7 @@ fn join(list) {
 
 EAPI=8
 
-DESCRIPTION="Write manually"
+DESCRIPTION="<%= @summary orelse "Write manually"%>"
 HOMEPAGE="Write manually"
 
 <%

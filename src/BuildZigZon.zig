@@ -22,6 +22,10 @@ minimum_zig_version_raw: ?[]const u8,
 dependencies: ?std.json.ArrayHashMap(Dep),
 paths: []const []const u8,
 
+/// Optional. Not official (yet?):
+/// https://github.com/ziglang/zig/issues/23816
+summary: ?[]const u8,
+
 pub const Dep = struct {
     storage: Storage,
     lazy: ?bool,
@@ -143,6 +147,7 @@ const Parser = struct {
             .minimum_zig_version_raw = null,
             .dependencies = null,
             .paths = &.{},
+            .summary = null,
         };
 
         file_parsing_events.debug(@src(), "Found {d} top-level fields, parsing...", .{root_struct.names.len});
@@ -168,6 +173,7 @@ const Parser = struct {
                 minimum_zig_version,
                 dependencies,
                 paths,
+                summary,
                 unknown,
             };
             const top_level_field_type = std.meta.stringToEnum(TopLevelField, field.name) orelse .unknown;
@@ -420,6 +426,16 @@ const Parser = struct {
                     }
 
                     result.paths = try paths.toOwnedSlice(allocator);
+                    continue;
+                },
+                .summary => {
+                    result.summary = switch (field.value) {
+                        .string_literal => |string_literal| try allocator.dupe(u8, string_literal),
+                        else => |not_a_string| {
+                            field_parsing_events.err(@src(), "Not a string: {}", .{not_a_string});
+                            return error.InvalidBuildZigZon;
+                        },
+                    };
                     continue;
                 },
                 .unknown => {

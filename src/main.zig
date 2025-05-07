@@ -343,30 +343,36 @@ pub fn main() !void {
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
-    const dependencies: Dependencies = if (global.fetch_mode != .none) fetch: {
+    const manifest: ?BuildZigZon = if (project_setup.build_zig_zon) |build_zig_zon_loc| parse: {
+        main_log.info(@src(), "Found \"build.zig.zon\" file nearby.", .{});
+        break :parse try .read(arena, zig_process.version, build_zig_zon_loc, main_log);
+    } else nothing: {
+        main_log.warn(@src(), "\"build.zig.zon\" was not found.", .{});
+        break :nothing null;
+    };
+
+    const project_name, const project_version, const project_summary = if (manifest != null) .{ manifest.?.name, manifest.?.version_raw, manifest.?.summary } else .{ "unknown", "0.0.0", null };
+
+    const dependencies: Dependencies = if (global.fetch_mode != .none and manifest != null) fetch: {
+        main_log.info(@src(), "Proceeding to fetch dependencies.", .{});
+
         var fetch_events = try main_log.child("fetch");
         defer fetch_events.deinit();
 
-        const build_zig_zon_loc = if (project_setup.build_zig_zon) |build_zig_zon| build_zig_zon else {
-            fetch_events.err(@src(), "\"build.zig.zon\" was not found. Skipping fetching.", .{});
-            break :fetch .empty;
-        };
-        fetch_events.info(@src(), "Found \"build.zig.zon\" file nearby, proceeding to fetch dependencies.", .{});
-
-        const project_build_zig_zon_struct: BuildZigZon = try .read(arena, zig_process.version, build_zig_zon_loc, fetch_events);
         break :fetch try .collect(
-            gpa,
             arena,
             //
             project_setup,
-            project_build_zig_zon_struct,
+            manifest.?,
             generator_setup,
             fetch_events,
             global.fetch_mode,
             zig_process,
         );
-    } else .empty;
-    defer dependencies.deinit(gpa);
+    } else nothing: {
+        main_log.warn(@src(), "Skipping fetching.", .{});
+        break :nothing .empty;
+    };
 
     main_log.info(@src(), "Packages count: {d}", .{dependencies.packages.len});
     main_log.debug(
@@ -385,10 +391,6 @@ pub fn main() !void {
         var archive_arena_instance: std.heap.ArenaAllocator = .init(gpa);
         const archive_arena = archive_arena_instance.allocator();
         defer archive_arena_instance.deinit();
-
-        // Used for generated tarball-tarball name.
-        const project_name = dependencies.root_package_name;
-        const project_version = dependencies.root_package_version;
 
         const tarball_tarball_path = try std.fmt.allocPrint(
             archive_arena,
@@ -522,6 +524,7 @@ pub fn main() !void {
             .live => "9999",
             .release => try std.fmt.allocPrint(arena, "{d}.{d}", .{ zig_process.version.sem_ver.major, zig_process.version.sem_ver.minor }),
         },
+        .summary = project_summary,
         .dependencies = downloadable_dependencies,
         .tarball_tarball = optional_tarball_tarball,
         .report = report,
@@ -531,17 +534,8 @@ pub fn main() !void {
     if (output_file == null) {
         main_log.warn(@src(), "\"--output-file\" option was not passed, trying to generate file name...", .{});
 
-        const project_name = if (dependencies.root_package_name.len > 0)
-            dependencies.root_package_name
-        else
-            "unknown";
-        const project_version = if (dependencies.root_package_version.len > 0)
-            dependencies.root_package_version
-        else
-            "0.0.0";
-
         const name = try std.fmt.allocPrint(arena, "{s}-{s}.ebuild", .{ project_name, project_version });
-        for (name[0..dependencies.root_package_name.len]) |*c|
+        for (name[0..project_name.len]) |*c|
             switch (c.*) {
                 '_' => c.* = '-',
                 else => {},

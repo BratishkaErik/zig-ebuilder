@@ -15,31 +15,14 @@ const Dependencies = @This();
 pub const Package = @import("Dependencies/Package.zig");
 pub const FetchMode = enum { none, plain, hashed };
 
-/// Value of `name` field in `build.zig.zon`,
-/// or empty if no `build.zig.zon`.
-root_package_name: []const u8,
-
-/// Value of `version` field in `build.zig.zon`,
-/// or empty if no `build.zig.zon`.
-root_package_version: []const u8,
-
 /// Sorted alphabetically. Can contain only remote URIs.
 packages: []const Package,
 
 pub const empty: Dependencies = .{
-    .root_package_name = "",
-    .root_package_version = "",
     .packages = &[0]Package{},
 };
 
-pub fn deinit(self: Dependencies, allocator: std.mem.Allocator) void {
-    allocator.free(self.root_package_name);
-    allocator.free(self.root_package_version);
-}
-
 pub fn collect(
-    /// All data allocated by this allocator is saved.
-    gpa: std.mem.Allocator,
     /// All data allocated by this allocator should be cleaned by caller.
     arena: std.mem.Allocator,
     //
@@ -168,6 +151,7 @@ pub fn collect(
                         .minimum_zig_version = null,
                         .minimum_zig_version_raw = null,
                         .paths = &.{""},
+                        .summary = null,
                     },
                     else => |e| return e,
                 };
@@ -259,8 +243,6 @@ pub fn collect(
     packages.sort(Sort{ .values = packages.values() });
 
     return .{
-        .root_package_name = try gpa.dupe(u8, project_build_zig_zon_struct.name),
-        .root_package_version = try gpa.dupe(u8, project_build_zig_zon_struct.version_raw),
         .packages = packages.values(),
     };
 }

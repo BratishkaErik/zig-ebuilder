@@ -22,12 +22,16 @@ directory, and path is printed to the user.
 
 > [!IMPORTANT]
 > Currently, there is no official way to declare information about
-> licenses, homepage and description in `build.zig.zon`, so we
+> licenses, homepage and "short description" in `build.zig.zon`, so we
 > can't extract it. You will need to fill it manually after generation.
 >
 > For now I recommend to use [REUSE tooling](https://reuse.software/)
 > (for authors and users) and wait for resolution of
 > https://github.com/ziglang/zig/issues/14342.
+>
+> Additionally, currently one unofficial field is supported:
+> `summary` from [another proposal](https://github.com/ziglang/zig/issues/23816)
+> (corresponds to "short description")
 
 Result is then written to the file or STDOUT (you can set file name
 explicitly or let zig-ebuilder fill it for you).
