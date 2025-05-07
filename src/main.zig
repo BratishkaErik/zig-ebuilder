@@ -16,7 +16,7 @@ const location = @import("location.zig");
 const reporter = @import("reporter.zig");
 const setup = @import("setup.zig");
 
-const version: std.SemanticVersion = .{ .major = 0, .minor = 2, .patch = 0 };
+const version: std.SemanticVersion = .{ .major = 0, .minor = 3, .patch = 0 };
 
 fn printHelp(writer: std.io.AnyWriter) void {
     writer.print(

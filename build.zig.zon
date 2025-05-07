@@ -7,7 +7,7 @@
     .minimum_zig_version = "0.14.0",
 
     .name = .zig_ebuilder,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .summary = "Tool to generate package manager recipes for Zig projects",
 
     .dependencies = .{
