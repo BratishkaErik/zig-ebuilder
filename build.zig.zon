@@ -1,18 +1,22 @@
 // SPDX-FileCopyrightText: 2024 BratishkaErik
 //
 // SPDX-License-Identifier: 0BSD
+
 .{
+    .fingerprint = 0xd3a14801_e4afba58,
+    .minimum_zig_version = "0.14.0",
+
     .name = .zig_ebuilder,
     .version = "0.2.0",
-    .fingerprint = 0xd3a14801_e4afba58,
+    .summary = "Tool to generate package manager recipes for Zig projects",
 
-    .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .ztl = .{
             .url = "git+https://github.com/karlseguin/ztl?ref=master#c2ef279cda843f865e41e0139c957afc25ddd70b",
             .hash = "ztl-0.0.0-XMYgXAjJBACjad2q-qlRgusVcp6aG69Nfg_LSx14_4wq",
         },
     },
+
     .paths = .{
         "build.zig",
         "build.zig.zon",
