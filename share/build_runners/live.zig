@@ -580,7 +580,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.15.0-dev.465+bb79c85cb".
+    // Synced with Zig build runner, version "0.15.0-dev.565+8e72a2528".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -902,7 +902,7 @@ fn runStepNames(
     if (run.prominent_compile_errors and total_compile_errors > 0) {
         for (step_stack.keys()) |s| {
             if (s.result_error_bundle.errorMessageCount() > 0) {
-                s.result_error_bundle.renderToStdErr(.{ .ttyconf = ttyconf, .include_reference_trace = (b.reference_trace orelse 0) > 0 });
+                s.result_error_bundle.renderToStdErr(.{ .ttyconf = ttyconf });
             }
         }
 
@@ -1281,11 +1281,7 @@ fn workerMakeOneStep(
         defer std.debug.unlockStdErr();
 
         const gpa = b.allocator;
-        const options: std.zig.ErrorBundle.RenderOptions = .{
-            .ttyconf = run.ttyconf,
-            .include_reference_trace = (b.reference_trace orelse 0) > 0,
-        };
-        printErrorMessages(gpa, s, options, run.stderr, run.prominent_compile_errors) catch {};
+        printErrorMessages(gpa, s, .{ .ttyconf = run.ttyconf }, run.stderr, run.prominent_compile_errors) catch {};
     }
 
     handle_result: {
