@@ -582,7 +582,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.15.0-dev.565+8e72a2528".
+    // Synced with Zig build runner, version "0.15.0-dev.723+3b2bef8a9".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -751,7 +751,6 @@ fn prepare(
             if (run.max_rss_is_default) {
                 std.debug.print("note: use --maxrss to override the default", .{});
             }
-            return uncleanExit();
         }
     }
 }
