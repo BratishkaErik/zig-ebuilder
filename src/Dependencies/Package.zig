@@ -312,8 +312,8 @@ const Service = enum {
     });
 };
 
-// Copied from Zig compiler sources ("src/package/Fetch.zig"
-// as for upstream commit ea527f7a850f0200681630d8f36131eca31ef48b).
+// Based on Zig compiler sources ("src/Package/Fetch.zig")
+// as for upstream commit 21a0885ae70f1e977b91a63a8b23d705acdac618.
 // SPDX-SnippetBegin
 // SPDX-SnippetCopyrightText: Zig contributors
 // SPDX-License-Identifier: MIT
@@ -337,6 +337,7 @@ const FileType = enum {
         if (ascii.endsWithIgnoreCase(file_path, ".tzst")) return .@"tar.zst";
         if (ascii.endsWithIgnoreCase(file_path, ".tar.zst")) return .@"tar.zst";
         if (ascii.endsWithIgnoreCase(file_path, ".zip")) return .zip;
+        if (ascii.endsWithIgnoreCase(file_path, ".jar")) return .zip;
         return null;
     }
 };
