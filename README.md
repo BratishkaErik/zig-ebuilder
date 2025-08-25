@@ -47,8 +47,8 @@ Supported formats are ebuilds for Gentoo-based distros with
 
 For compilation you need Zig 0.14 .
 
-For using at runtime you can use Zig 0.13, 0.14 or latest master commit
-(tested with `0.15.0-dev.2+79460d4a3`).
+For using at runtime you can use Zig 0.13, 0.14, 0.15 or latest master commit
+(tested with `0.16.0-dev.33+12686d9b7`).
 
 ```console
 $ zig build
