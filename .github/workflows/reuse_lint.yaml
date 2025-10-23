@@ -18,4 +18,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint missing copyright and licensing information
-        uses: fsfe/reuse-action@211d2700d0242a061dfd6bb1e654004c806f3264
+        uses: fsfe/reuse-action@c0aee71b67fee9b3121b14e9eb9f6dc989691000
