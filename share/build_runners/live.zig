@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2024 Zig contributors
 // SPDX-License-Identifier: MIT
-const std = @import("std");
+const runner = @This();
 const builtin = @import("builtin");
+
+const std = @import("std");
+const Io = std.Io;
 const assert = std.debug.assert;
 const fmt = std.fmt;
 const mem = std.mem;
@@ -13,7 +16,6 @@ const WebServer = std.Build.WebServer;
 const Allocator = std.mem.Allocator;
 const fatal = std.process.fatal;
 const Writer = std.Io.Writer;
-const runner = @This();
 const tty = std.Io.tty;
 
 pub const root = @import("@build");
@@ -39,6 +41,10 @@ pub fn main() !void {
     const arena = thread_safe_arena.allocator();
 
     const args = try process.argsAlloc(arena);
+
+    var threaded: std.Io.Threaded = .init(gpa);
+    defer threaded.deinit();
+    const io = threaded.io();
 
     // skip my own exe name
     var arg_idx: usize = 1;
@@ -70,8 +76,10 @@ pub fn main() !void {
     };
 
     var graph: std.Build.Graph = .{
+        .io = io,
         .arena = arena,
         .cache = .{
+            .io = io,
             .gpa = arena,
             .manifest_dir = try local_cache_directory.handle.makeOpenPath("h", .{}),
         },
@@ -81,7 +89,7 @@ pub fn main() !void {
         .zig_lib_directory = zig_lib_directory,
         .host = .{
             .query = .{},
-            .result = try std.zig.system.resolveTargetQuery(.{}),
+            .result = try std.zig.system.resolveTargetQuery(io, .{}),
         },
         .time_report = false,
     };
@@ -118,7 +126,7 @@ pub fn main() !void {
     var watch = false;
     var fuzz: ?std.Build.Fuzz.Mode = null;
     var debounce_interval_ms: u16 = 50;
-    var webui_listen: ?std.net.Address = null;
+    var webui_listen: ?Io.net.IpAddress = null;
 
     if (try std.zig.EnvVar.ZIG_BUILD_ERROR_STYLE.get(arena)) |str| {
         if (std.meta.stringToEnum(ErrorStyle, str)) |style| {
@@ -285,11 +293,11 @@ pub fn main() !void {
                     });
                 };
             } else if (mem.eql(u8, arg, "--webui")) {
-                webui_listen = std.net.Address.parseIp("::1", 0) catch unreachable;
+                if (webui_listen == null) webui_listen = .{ .ip6 = .loopback(0) };
             } else if (mem.startsWith(u8, arg, "--webui=")) {
                 const addr_str = arg["--webui=".len..];
                 if (std.mem.eql(u8, addr_str, "-")) fatal("web interface cannot listen on stdio", .{});
-                webui_listen = std.net.Address.parseIpAndPort(addr_str) catch |err| {
+                webui_listen = Io.net.IpAddress.parseLiteral(addr_str) catch |err| {
                     fatal("invalid web UI address '{s}': {s}", .{ addr_str, @errorName(err) });
                 };
             } else if (mem.eql(u8, arg, "--debug-log")) {
@@ -331,14 +339,10 @@ pub fn main() !void {
                 watch = true;
             } else if (mem.eql(u8, arg, "--time-report")) {
                 graph.time_report = true;
-                if (webui_listen == null) {
-                    webui_listen = std.net.Address.parseIp("::1", 0) catch unreachable;
-                }
+                if (webui_listen == null) webui_listen = .{ .ip6 = .loopback(0) };
             } else if (mem.eql(u8, arg, "--fuzz")) {
                 fuzz = .{ .forever = undefined };
-                if (webui_listen == null) {
-                    webui_listen = std.net.Address.parseIp("::1", 0) catch unreachable;
-                }
+                if (webui_listen == null) webui_listen = .{ .ip6 = .loopback(0) };
             } else if (mem.startsWith(u8, arg, "--fuzz=")) {
                 const value = arg["--fuzz=".len..];
                 if (value.len == 0) fatal("missing argument to --fuzz", .{});
@@ -440,8 +444,7 @@ pub fn main() !void {
         if (builtin.single_threaded) fatal("'--webui' is not yet supported on single-threaded hosts", .{});
     }
 
-    const stderr: std.fs.File = .stderr();
-    const ttyconf = get_tty_conf(color, stderr);
+    const ttyconf = color.detectTtyConf();
     switch (ttyconf) {
         .no_color => try graph.env_map.put("NO_COLOR", "1"),
         .escape_codes => try graph.env_map.put("CLICOLOR_FORCE", "1"),
@@ -520,9 +523,9 @@ pub fn main() !void {
         .error_style = error_style,
         .multiline_errors = multiline_errors,
         .summary = summary orelse if (watch or webui_listen != null) .line else .failures,
-        .ttyconf = ttyconf,
-        .stderr = stderr,
         .thread_pool = undefined,
+
+        .ttyconf = ttyconf,
     };
     defer {
         run.memory_blocked_steps.deinit(gpa);
@@ -547,33 +550,36 @@ pub fn main() !void {
 
     var w: Watch = w: {
         if (!watch) break :w undefined;
-        if (!Watch.have_impl) fatal("--watch not yet implemented for {s}", .{@tagName(builtin.os.tag)});
+        if (!Watch.have_impl) fatal("--watch not yet implemented for {t}", .{builtin.os.tag});
         break :w try .init();
     };
 
     try run.thread_pool.init(thread_pool_options);
     defer run.thread_pool.deinit();
 
+    const now = Io.Clock.Timestamp.now(io, .awake) catch |err| fatal("failed to collect timestamp: {t}", .{err});
+
     run.web_server = if (webui_listen) |listen_address| ws: {
         if (builtin.single_threaded) unreachable; // `fatal` above
         break :ws .init(.{
             .gpa = gpa,
             .thread_pool = &run.thread_pool,
+            .ttyconf = ttyconf,
             .graph = &graph,
             .all_steps = run.step_stack.keys(),
-            .ttyconf = run.ttyconf,
             .root_prog_node = main_progress_node,
             .watch = watch,
             .listen_address = listen_address,
+            .base_timestamp = now,
         });
     } else null;
 
     if (run.web_server) |*ws| {
-        ws.start() catch |err| fatal("failed to start web server: {s}", .{@errorName(err)});
+        ws.start() catch |err| fatal("failed to start web server: {t}", .{err});
     }
 
     rebuild: while (true) : (if (run.error_style.clearOnUpdate()) {
-        const bw = std.debug.lockStderrWriter(&stdio_buffer_allocation);
+        const bw, _ = std.debug.lockStderrWriter(&stdio_buffer_allocation);
         defer std.debug.unlockStderrWriter();
         try bw.writeAll("\x1B[2J\x1B[3J\x1B[H");
     }) {
@@ -677,13 +683,14 @@ const Run = struct {
     /// Allocated into `gpa`.
     step_stack: std.AutoArrayHashMapUnmanaged(*Step, void),
     thread_pool: std.Thread.Pool,
+    /// Similar to the `tty.Config` returned by `std.debug.lockStderrWriter`,
+    /// but also respects the '--color' flag.
+    ttyconf: tty.Config,
 
     claimed_rss: usize,
     error_style: ErrorStyle,
     multiline_errors: MultilineErrors,
     summary: Summary,
-    ttyconf: tty.Config,
-    stderr: File,
 };
 
 fn prepare(
@@ -721,7 +728,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.16.0-dev.857+e5fcc8192".
+    // Synced with Zig build runner, version "0.16.0-dev.1224+2f4bca41e".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -855,17 +862,18 @@ fn prepare(
             .used_dependencies_hashes = used_dependencies_hashes.items,
         };
 
+        const io = b.graph.io;
         const port = std.process.parseEnvVarInt("ZIG_EBUILDER_REPORT_LISTEN_PORT", u16, 10) catch |err|
             std.debug.panic("Error when parsing listen port for report client from \"zig build\" runner: {s}", .{@errorName(err)});
 
-        const listen_address = std.net.Address.initIp6(@as([15]u8, @splat(0)) ++ .{1}, port, 0, 0);
+        const listen_address: std.Io.net.IpAddress = .{ .ip6 = .loopback(port) };
 
-        const conn = std.net.tcpConnectToAddress(listen_address) catch |err|
+        const conn = listen_address.connect(io, .{ .protocol = .tcp, .mode = .stream }) catch |err|
             std.debug.panic("Error when starting report client from \"zig build\" runner: {s}", .{@errorName(err)});
         defer conn.close();
 
         var conn_buffer: [1024]u8 = undefined;
-        var conn_writer = conn.writer(&conn_buffer);
+        var conn_writer = conn.writer(io, &conn_buffer);
         var writer = &conn_writer.interface;
 
         const json_report_formatter = std.json.fmt(report, .{ .whitespace = .minified });
@@ -910,6 +918,7 @@ fn runStepNames(
     fuzz: ?std.Build.Fuzz.Mode,
 ) !void {
     const gpa = run.gpa;
+    const io = b.graph.io;
     const step_stack = &run.step_stack;
     const thread_pool = &run.thread_pool;
 
@@ -986,8 +995,6 @@ fn runStepNames(
         }
     }
 
-    const ttyconf = run.ttyconf;
-
     if (fuzz) |mode| blk: {
         switch (builtin.os.tag) {
             // Current implementation depends on two things that need to be ported to Windows:
@@ -1013,10 +1020,11 @@ fn runStepNames(
         assert(mode == .limit);
         var f = std.Build.Fuzz.init(
             gpa,
+            io,
             thread_pool,
+            run.ttyconf,
             step_stack.keys(),
             parent_prog_node,
-            ttyconf,
             mode,
         ) catch |err| fatal("failed to start fuzzer: {s}", .{@errorName(err)});
         defer f.deinit();
@@ -1041,8 +1049,9 @@ fn runStepNames(
             .none => break :summary,
         }
 
-        const w = std.debug.lockStderrWriter(&stdio_buffer_allocation);
+        const w, _ = std.debug.lockStderrWriter(&stdio_buffer_allocation);
         defer std.debug.unlockStderrWriter();
+        const ttyconf = run.ttyconf;
 
         const total_count = success_count + failure_count + pending_count + skipped_count;
         ttyconf.setColor(w, .cyan) catch {};
@@ -1550,9 +1559,10 @@ fn workerMakeOneStep(
     const show_error_msgs = s.result_error_msgs.items.len > 0;
     const show_stderr = s.result_stderr.len > 0;
     if (show_error_msgs or show_compile_errors or show_stderr) {
-        const bw = std.debug.lockStderrWriter(&stdio_buffer_allocation);
+        const bw, _ = std.debug.lockStderrWriter(&stdio_buffer_allocation);
         defer std.debug.unlockStderrWriter();
-        printErrorMessages(run.gpa, s, .{ .ttyconf = run.ttyconf }, bw, run.error_style, run.multiline_errors) catch {};
+        const ttyconf = run.ttyconf;
+        printErrorMessages(run.gpa, s, .{}, bw, ttyconf, run.error_style, run.multiline_errors) catch {};
     }
 
     handle_result: {
@@ -1616,11 +1626,10 @@ pub fn printErrorMessages(
     failing_step: *Step,
     options: std.zig.ErrorBundle.RenderOptions,
     stderr: *Writer,
+    ttyconf: tty.Config,
     error_style: ErrorStyle,
     multiline_errors: MultilineErrors,
 ) !void {
-    const ttyconf = options.ttyconf;
-
     if (error_style.verboseContext()) {
         // Provide context for where these error messages are coming from by
         // printing the corresponding Step subtree.
@@ -1664,7 +1673,7 @@ pub fn printErrorMessages(
         }
     }
 
-    try failing_step.result_error_bundle.renderToWriter(options, stderr);
+    try failing_step.result_error_bundle.renderToWriter(options, stderr, ttyconf);
 
     for (failing_step.result_error_msgs.items) |msg| {
         try ttyconf.setColor(stderr, .red);
@@ -1909,14 +1918,6 @@ const ErrorStyle = enum {
 };
 const MultilineErrors = enum { indent, newline, none };
 const Summary = enum { all, new, failures, line, none };
-
-fn get_tty_conf(color: Color, stderr: File) tty.Config {
-    return switch (color) {
-        .auto => tty.detectConfig(stderr),
-        .on => .escape_codes,
-        .off => .no_color,
-    };
-}
 
 fn fatalWithHint(comptime f: []const u8, args: anytype) noreturn {
     std.debug.print(f ++ "\n  access the help menu with 'zig build -h'\n", args);
