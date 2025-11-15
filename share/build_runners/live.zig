@@ -445,11 +445,6 @@ pub fn main() !void {
     }
 
     const ttyconf = color.detectTtyConf();
-    switch (ttyconf) {
-        .no_color => try graph.env_map.put("NO_COLOR", "1"),
-        .escape_codes => try graph.env_map.put("CLICOLOR_FORCE", "1"),
-        .windows_api => {},
-    }
 
     const main_progress_node = std.Progress.start(.{
         .disable_printing = (color == .off),
@@ -728,7 +723,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.16.0-dev.1224+2f4bca41e".
+    // Synced with Zig build runner, version "0.16.0-dev.1340+1ebbdf8ee".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -1550,6 +1545,7 @@ fn workerMakeOneStep(
         .thread_pool = thread_pool,
         .watch = run.watch,
         .web_server = if (run.web_server) |*ws| ws else null,
+        .ttyconf = run.ttyconf,
         .unit_test_timeout_ns = run.unit_test_timeout_ns,
         .gpa = run.gpa,
     });
