@@ -461,7 +461,7 @@ pub fn main() !void {
     }
 
     if (graph.needed_lazy_dependencies.entries.len != 0) {
-        var buffer: std.ArrayListUnmanaged(u8) = .empty;
+        var buffer: std.ArrayList(u8) = .empty;
         for (graph.needed_lazy_dependencies.keys()) |k| {
             try buffer.appendSlice(arena, k);
             try buffer.append(arena, '\n');
@@ -674,7 +674,7 @@ const Run = struct {
     watch: bool,
     web_server: if (!builtin.single_threaded) ?WebServer else ?noreturn,
     /// Allocated into `gpa`.
-    memory_blocked_steps: std.ArrayListUnmanaged(*Step),
+    memory_blocked_steps: std.ArrayList(*Step),
     /// Allocated into `gpa`.
     step_stack: std.AutoArrayHashMapUnmanaged(*Step, void),
     thread_pool: std.Thread.Pool,
@@ -723,7 +723,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.16.0-dev.1340+1ebbdf8ee".
+    // Synced with Zig build runner, version "0.16.0-dev.1442+21f9f378f".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -1629,7 +1629,7 @@ pub fn printErrorMessages(
     if (error_style.verboseContext()) {
         // Provide context for where these error messages are coming from by
         // printing the corresponding Step subtree.
-        var step_stack: std.ArrayListUnmanaged(*Step) = .empty;
+        var step_stack: std.ArrayList(*Step) = .empty;
         defer step_stack.deinit(gpa);
         try step_stack.append(gpa, failing_step);
         while (step_stack.items[step_stack.items.len - 1].dependants.items.len != 0) {
