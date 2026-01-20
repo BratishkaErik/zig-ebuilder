@@ -23,10 +23,9 @@ pub const dependencies = @import("@dependencies");
 pub const std_options: std.Options = .{
     .side_channels_mitigations = .none,
     .http_disable_tls = true,
-    .crypto_fork_safety = false,
 };
 
-pub fn main() !void {
+pub fn main(init: process.Init.Minimal) !void {
     // The build runner is often short-lived, but thanks to `--watch` and `--webui`, that's not
     // always the case. So, we do need a true gpa for some things.
     var debug_gpa_state: std.heap.DebugAllocator(.{}) = .init;
@@ -39,9 +38,12 @@ pub fn main() !void {
     var thread_safe_arena: std.heap.ThreadSafeAllocator = .{ .child_allocator = single_threaded_arena.allocator() };
     const arena = thread_safe_arena.allocator();
 
-    const args = try process.argsAlloc(arena);
+    const args = try init.args.toSlice(arena);
 
-    var threaded: std.Io.Threaded = .init(gpa, .{});
+    var threaded: std.Io.Threaded = .init(gpa, .{
+        .environ = init.environ,
+        .argv0 = .init(init.args),
+    });
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -81,11 +83,12 @@ pub fn main() !void {
         .arena = arena,
         .cache = .{
             .io = io,
-            .gpa = arena,
+            .gpa = gpa,
             .manifest_dir = try local_cache_directory.handle.createDirPathOpen(io, "h", .{}),
+            .cwd = try process.getCwdAlloc(single_threaded_arena.allocator()),
         },
         .zig_exe = zig_exe,
-        .env_map = try process.getEnvMap(arena),
+        .environ_map = try init.environ.createMap(arena),
         .global_cache_root = global_cache_directory,
         .zig_lib_directory = zig_lib_directory,
         .host = .{
@@ -128,13 +131,13 @@ pub fn main() !void {
     var debounce_interval_ms: u16 = 50;
     var webui_listen: ?Io.net.IpAddress = null;
 
-    if (try std.zig.EnvVar.ZIG_BUILD_ERROR_STYLE.get(arena)) |str| {
+    if (std.zig.EnvVar.ZIG_BUILD_ERROR_STYLE.get(&graph.environ_map)) |str| {
         if (std.meta.stringToEnum(ErrorStyle, str)) |style| {
             error_style = style;
         }
     }
 
-    if (try std.zig.EnvVar.ZIG_BUILD_MULTILINE_ERRORS.get(arena)) |str| {
+    if (std.zig.EnvVar.ZIG_BUILD_MULTILINE_ERRORS.get(&graph.environ_map)) |str| {
         if (std.meta.stringToEnum(MultilineErrors, str)) |style| {
             multiline_errors = style;
         }
@@ -431,8 +434,8 @@ pub fn main() !void {
         }
     }
 
-    const NO_COLOR = std.zig.EnvVar.NO_COLOR.isSet();
-    const CLICOLOR_FORCE = std.zig.EnvVar.CLICOLOR_FORCE.isSet();
+    const NO_COLOR = std.zig.EnvVar.NO_COLOR.isSet(&graph.environ_map);
+    const CLICOLOR_FORCE = std.zig.EnvVar.CLICOLOR_FORCE.isSet(&graph.environ_map);
 
     graph.stderr_mode = switch (color) {
         .auto => try .detect(io, .stderr(), NO_COLOR, CLICOLOR_FORCE),
@@ -502,7 +505,7 @@ pub fn main() !void {
     var run: Run = .{
         .gpa = gpa,
 
-        .max_rss = max_rss,
+        .available_rss = max_rss,
         .max_rss_is_default = false,
         .max_rss_mutex = .init,
         .skip_oom_steps = skip_oom_steps,
@@ -513,7 +516,6 @@ pub fn main() !void {
         .memory_blocked_steps = .empty,
         .step_stack = .empty,
 
-        .claimed_rss = 0,
         .error_style = error_style,
         .multiline_errors = multiline_errors,
         .summary = summary orelse if (watch or webui_listen != null) .line else .failures,
@@ -523,8 +525,8 @@ pub fn main() !void {
         run.step_stack.deinit(gpa);
     }
 
-    if (run.max_rss == 0) {
-        run.max_rss = process.totalSystemMemory() catch std.math.maxInt(u64);
+    if (run.available_rss == 0) {
+        run.available_rss = process.totalSystemMemory() catch std.math.maxInt(u64);
         run.max_rss_is_default = true;
     }
 
@@ -542,7 +544,7 @@ pub fn main() !void {
     var w: Watch = w: {
         if (!watch) break :w undefined;
         if (!Watch.have_impl) fatal("--watch not yet implemented for {t}", .{builtin.os.tag});
-        break :w try .init();
+        break :w try .init(graph.cache.cwd);
     };
 
     const now = Io.Clock.Timestamp.now(io, .awake) catch |err| fatal("failed to collect timestamp: {t}", .{err});
@@ -594,6 +596,7 @@ pub fn main() !void {
                 .rebuild => {
                     for (run.step_stack.keys()) |step| {
                         step.state = .precheck_done;
+                        step.pending_deps = @intCast(step.dependencies.items.len);
                         step.reset(gpa);
                     }
                     continue :rebuild;
@@ -636,7 +639,7 @@ pub fn main() !void {
 
 fn markFailedStepsDirty(gpa: Allocator, all_steps: []const *Step) void {
     for (all_steps) |step| switch (step.state) {
-        .dependency_failure, .failure, .skipped => step.recursiveReset(gpa),
+        .dependency_failure, .failure, .skipped => _ = step.invalidateResult(gpa),
         else => continue,
     };
     // Now that all dirty steps have been found, the remaining steps that
@@ -657,7 +660,8 @@ fn countSubProcesses(all_steps: []const *Step) usize {
 
 const Run = struct {
     gpa: Allocator,
-    max_rss: u64,
+
+    available_rss: usize,
     max_rss_is_default: bool,
     max_rss_mutex: Io.Mutex,
     skip_oom_steps: bool,
@@ -669,7 +673,6 @@ const Run = struct {
     /// Allocated into `gpa`.
     step_stack: std.AutoArrayHashMapUnmanaged(*Step, void),
 
-    claimed_rss: usize,
     error_style: ErrorStyle,
     multiline_errors: MultilineErrors,
     summary: Summary,
@@ -710,7 +713,7 @@ fn prepare(
     }
 
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.16.0-dev.1876+f862762f0".
+    // Synced with Zig build runner, version "0.16.0-dev.2276+c857fce05".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -845,7 +848,14 @@ fn prepare(
         };
 
         const io = b.graph.io;
-        const port = std.process.parseEnvVarInt("ZIG_EBUILDER_REPORT_LISTEN_PORT", u16, 10) catch |err|
+        const env_map = &b.graph.environ_map;
+        const env_var = env_map.get("ZIG_EBUILDER_REPORT_LISTEN_PORT") orelse
+            std.debug.panic(
+                \\Error: listen port for report client is not defined:
+                \\ZIG_EBUILDER_REPORT_LISTEN_PORT not set
+                \\
+            , .{});
+        const port = std.fmt.parseInt(u16, env_var, 10) catch |err|
             std.debug.panic("Error when parsing listen port for report client from \"zig build\" runner: {s}", .{@errorName(err)});
 
         const listen_address: std.Io.net.IpAddress = .{ .ip6 = .loopback(port) };
@@ -873,12 +883,15 @@ fn prepare(
         var any_problems = false;
         for (step_stack.keys()) |s| {
             if (s.max_rss == 0) continue;
-            if (s.max_rss > run.max_rss) {
+            if (s.max_rss > run.available_rss) {
                 if (run.skip_oom_steps) {
                     s.state = .skipped_oom;
+                    for (s.dependants.items) |dependant| {
+                        dependant.pending_deps -= 1;
+                    }
                 } else {
                     std.debug.print("{s}{s}: this step declares an upper bound of {d} bytes of memory, exceeding the available {d} bytes of memory\n", .{
-                        s.owner.dep_prefix, s.name, s.max_rss, run.max_rss,
+                        s.owner.dep_prefix, s.name, s.max_rss, run.available_rss,
                     });
                     any_problems = true;
                 }
@@ -905,22 +918,27 @@ fn runStepNames(
     const step_stack = &run.step_stack;
 
     {
+        // Collect the initial set of tasks (those with no outstanding dependencies) into a buffer,
+        // then spawn them. The buffer is so that we don't race with `makeStep` and end up thinking
+        // a step is initial when it actually became ready due to an earlier initial step.
+        var initial_set: std.ArrayList(*Step) = .empty;
+        defer initial_set.deinit(gpa);
+        try initial_set.ensureUnusedCapacity(gpa, step_stack.count());
+        for (step_stack.keys()) |s| {
+            if (s.state == .precheck_done and s.pending_deps == 0) {
+                initial_set.appendAssumeCapacity(s);
+            }
+        }
+
         const step_prog = parent_prog_node.start("steps", step_stack.count());
         defer step_prog.end();
 
         var group: Io.Group = .init;
-        defer group.wait(io);
-
-        // Here we spawn the initial set of tasks with a nice heuristic -
-        // dependency order. Each worker when it finishes a step will then
-        // check whether it should run any dependants.
-        const steps_slice = step_stack.keys();
-        for (0..steps_slice.len) |i| {
-            const step = steps_slice[steps_slice.len - i - 1];
-            if (step.state == .skipped_oom) continue;
-
-            group.async(io, workerMakeOneStep, .{ &group, b, step, step_prog, run });
-        }
+        defer group.cancel(io);
+        // Start working on all of the initial steps...
+        for (initial_set.items) |s| try stepReady(&group, b, s, step_prog, run);
+        // ...and `makeStep` will trigger every other step when their last dependency finishes.
+        try group.await(io);
     }
 
     assert(run.memory_blocked_steps.items.len == 0);
@@ -939,6 +957,9 @@ fn runStepNames(
     var pending_count: usize = 0;
     var total_compile_errors: usize = 0;
 
+    var cleanup_task = io.async(cleanTmpFiles, .{ io, step_stack.keys() });
+    defer cleanup_task.await(io);
+
     for (step_stack.keys()) |s| {
         test_pass_count += s.test_results.passCount();
         test_skip_count += s.test_results.skip_count;
@@ -951,17 +972,7 @@ fn runStepNames(
         switch (s.state) {
             .precheck_unstarted => unreachable,
             .precheck_started => unreachable,
-            .running => unreachable,
-            .precheck_done => {
-                // precheck_done is equivalent to dependency_failure in the case of
-                // transitive dependencies. For example:
-                // A -> B -> C (failure)
-                // B will be marked as dependency_failure, while A may never be queued, and thus
-                // remain in the initial state of precheck_done.
-                s.state = .dependency_failure;
-                if (run.web_server) |*ws| ws.updateStepStatus(s, .failure);
-                pending_count += 1;
-            },
+            .precheck_done => unreachable,
             .dependency_failure => pending_count += 1,
             .success => success_count += 1,
             .skipped, .skipped_oom => skipped_count += 1,
@@ -981,7 +992,7 @@ fn runStepNames(
             // * Memory-mapping to share data between the fuzzer and build runner.
             // * COFF/PE support added to `std.debug.Info` (it needs a batching API for resolving
             //   many addresses to source locations).
-            .windows => fatal("--fuzz not yet implemented for {s}", .{@tagName(builtin.os.tag)}),
+            .windows => fatal("--fuzz not yet implemented for {t}", .{builtin.os.tag}),
             else => {},
         }
         if (@bitSizeOf(usize) != 64) {
@@ -1004,11 +1015,11 @@ fn runStepNames(
             step_stack.keys(),
             parent_prog_node,
             mode,
-        ) catch |err| fatal("failed to start fuzzer: {s}", .{@errorName(err)});
+        ) catch |err| fatal("failed to start fuzzer: {t}", .{err});
         defer f.deinit();
 
         f.start();
-        f.waitAndPrintReport();
+        try f.waitAndPrintReport();
     }
 
     // Every test has a state
@@ -1161,7 +1172,6 @@ fn printStepStatus(s: *Step, stderr: Io.Terminal, run: *const Run) !void {
         .precheck_unstarted => unreachable,
         .precheck_started => unreachable,
         .precheck_done => unreachable,
-        .running => unreachable,
 
         .dependency_failure => {
             try stderr.setColor(.dim);
@@ -1220,16 +1230,16 @@ fn printStepStatus(s: *Step, stderr: Io.Terminal, run: *const Run) !void {
             }
             try writer.writeAll("\n");
         },
-        .skipped, .skipped_oom => |skip| {
+        .skipped => {
             try stderr.setColor(.yellow);
-            try writer.writeAll(" skipped");
-            if (skip == .skipped_oom) {
-                try writer.writeAll(" (not enough memory)");
-                try stderr.setColor(.dim);
-                try writer.print(" upper bound of {d} exceeded runner limit ({d})", .{ s.max_rss, run.max_rss });
-                try stderr.setColor(.yellow);
-            }
-            try writer.writeAll("\n");
+            try writer.writeAll(" skipped\n");
+            try stderr.setColor(.reset);
+        },
+        .skipped_oom => {
+            try stderr.setColor(.yellow);
+            try writer.writeAll(" skipped (not enough memory)");
+            try stderr.setColor(.dim);
+            try writer.print(" upper bound of {d} exceeded runner limit ({d})\n", .{ s.max_rss, run.available_rss });
             try stderr.setColor(.reset);
         },
         .failure => {
@@ -1403,10 +1413,10 @@ fn printTreeStep(
 /// Each step has its dependencies traversed in random order, this accomplishes
 /// two things:
 /// - `step_stack` will be in randomized-depth-first order, so the build runner
-///   spawns steps in a random (but optimized) order
+///   spawns initial steps in a random order
 /// - each step's `dependants` list is also filled in a random order, so that
-///   when it finishes executing in `workerMakeOneStep`, it spawns next steps
-///   to run in random order
+///   when it finishes executing in `makeStep`, it spawns next steps to run in
+///   random order
 fn constructGraphAndCheckForDependencyLoop(
     gpa: Allocator,
     b: *std.Build,
@@ -1443,12 +1453,12 @@ fn constructGraphAndCheckForDependencyLoop(
             }
 
             s.state = .precheck_done;
+            s.pending_deps = @intCast(s.dependencies.items.len);
         },
         .precheck_done => {},
 
         // These don't happen until we actually run the step graph.
         .dependency_failure => unreachable,
-        .running => unreachable,
         .success => unreachable,
         .failure => unreachable,
         .skipped => unreachable,
@@ -1456,148 +1466,136 @@ fn constructGraphAndCheckForDependencyLoop(
     }
 }
 
-fn workerMakeOneStep(
+/// Runs the "make" function of the single step `s`, updates its state, and then spawns newly-ready
+/// dependant steps in `group`. If `s` makes an RSS claim (i.e. `s.max_rss != 0`), the caller must
+/// have already subtracted this value from `run.available_rss`. This function will release the RSS
+/// claim (i.e. add `s.max_rss` back into `run.available_rss`) and queue any viable memory-blocked
+/// steps after "make" completes for `s`.
+fn makeStep(
     group: *Io.Group,
     b: *std.Build,
     s: *Step,
-    prog_node: std.Progress.Node,
+    root_prog_node: std.Progress.Node,
     run: *Run,
-) void {
+) Io.Cancelable!void {
     const graph = b.graph;
     const io = graph.io;
     const gpa = run.gpa;
 
-    // First, check the conditions for running this step. If they are not met,
-    // then we return without doing the step, relying on another worker to
-    // queue this step up again when dependencies are met.
-    for (s.dependencies.items) |dep| {
-        switch (@atomicLoad(Step.State, &dep.state, .seq_cst)) {
-            .success, .skipped => continue,
-            .failure, .dependency_failure, .skipped_oom => {
-                @atomicStore(Step.State, &s.state, .dependency_failure, .seq_cst);
-                if (run.web_server) |*ws| ws.updateStepStatus(s, .failure);
-                return;
-            },
-            .precheck_done, .running => {
-                // dependency is not finished yet.
-                return;
-            },
+    {
+        const step_prog_node = root_prog_node.start(s.name, 0);
+        defer step_prog_node.end();
+
+        if (run.web_server) |*ws| ws.updateStepStatus(s, .wip);
+
+        const new_state: Step.State = for (s.dependencies.items) |dep| {
+            switch (@atomicLoad(Step.State, &dep.state, .monotonic)) {
+                .precheck_unstarted => unreachable,
+                .precheck_started => unreachable,
+                .precheck_done => unreachable,
+
+                .failure,
+                .dependency_failure,
+                .skipped_oom,
+                => break .dependency_failure,
+
+                .success, .skipped => {},
+            }
+        } else if (s.make(.{
+            .progress_node = step_prog_node,
+            .watch = run.watch,
+            .web_server = if (run.web_server) |*ws| ws else null,
+            .unit_test_timeout_ns = run.unit_test_timeout_ns,
+            .gpa = gpa,
+        })) state: {
+            break :state .success;
+        } else |err| switch (err) {
+            error.MakeFailed => .failure,
+            error.MakeSkipped => .skipped,
+        };
+
+        @atomicStore(Step.State, &s.state, new_state, .monotonic);
+
+        switch (new_state) {
             .precheck_unstarted => unreachable,
             .precheck_started => unreachable,
+            .precheck_done => unreachable,
+
+            .failure,
+            .dependency_failure,
+            .skipped_oom,
+            => {
+                if (run.web_server) |*ws| ws.updateStepStatus(s, .failure);
+                std.Progress.setStatus(.failure_working);
+            },
+
+            .success,
+            .skipped,
+            => {
+                if (run.web_server) |*ws| ws.updateStepStatus(s, .success);
+            },
         }
     }
-
-    if (s.max_rss != 0) {
-        run.max_rss_mutex.lockUncancelable(io);
-        defer run.max_rss_mutex.unlock(io);
-
-        // Avoid running steps twice.
-        if (s.state != .precheck_done) {
-            // Another worker got the job.
-            return;
-        }
-
-        const new_claimed_rss = run.claimed_rss + s.max_rss;
-        if (new_claimed_rss > run.max_rss) {
-            // Running this step right now could possibly exceed the allotted RSS.
-            // Add this step to the queue of memory-blocked steps.
-            run.memory_blocked_steps.append(gpa, s) catch @panic("OOM");
-            return;
-        }
-
-        run.claimed_rss = new_claimed_rss;
-        s.state = .running;
-    } else {
-        // Avoid running steps twice.
-        if (@cmpxchgStrong(Step.State, &s.state, .precheck_done, .running, .seq_cst, .seq_cst) != null) {
-            // Another worker got the job.
-            return;
-        }
-    }
-
-    const sub_prog_node = prog_node.start(s.name, 0);
-    defer sub_prog_node.end();
-
-    if (run.web_server) |*ws| ws.updateStepStatus(s, .wip);
-
-    const make_result = s.make(.{
-        .progress_node = sub_prog_node,
-        .watch = run.watch,
-        .web_server = if (run.web_server) |*ws| ws else null,
-        .unit_test_timeout_ns = run.unit_test_timeout_ns,
-        .gpa = gpa,
-    });
 
     // No matter the result, we want to display error/warning messages.
-    const show_compile_errors = s.result_error_bundle.errorMessageCount() > 0;
-    const show_error_msgs = s.result_error_msgs.items.len > 0;
-    const show_stderr = s.result_stderr.len > 0;
-    if (show_error_msgs or show_compile_errors or show_stderr) {
-        const stderr = io.lockStderr(&stdio_buffer_allocation, graph.stderr_mode) catch |err| switch (err) {
-            error.Canceled => return,
-        };
+    if (s.result_error_bundle.errorMessageCount() > 0 or
+        s.result_error_msgs.items.len > 0 or
+        s.result_stderr.len > 0)
+    {
+        const stderr = try io.lockStderr(&stdio_buffer_allocation, graph.stderr_mode);
         defer io.unlockStderr();
         printErrorMessages(gpa, s, .{}, stderr.terminal(), run.error_style, run.multiline_errors) catch {};
     }
 
-    handle_result: {
-        if (make_result) |_| {
-            @atomicStore(Step.State, &s.state, .success, .seq_cst);
-            if (run.web_server) |*ws| ws.updateStepStatus(s, .success);
-        } else |err| switch (err) {
-            error.MakeFailed => {
-                @atomicStore(Step.State, &s.state, .failure, .seq_cst);
-                if (run.web_server) |*ws| ws.updateStepStatus(s, .failure);
-                std.Progress.setStatus(.failure_working);
-                break :handle_result;
-            },
-            error.MakeSkipped => {
-                @atomicStore(Step.State, &s.state, .skipped, .seq_cst);
-                if (run.web_server) |*ws| ws.updateStepStatus(s, .success);
-            },
-        }
-
-        // Successful completion of a step, so we queue up its dependants as well.
-        for (s.dependants.items) |dep| {
-            group.async(io, workerMakeOneStep, .{ group, b, dep, prog_node, run });
-        }
-    }
-
-    // If this is a step that claims resources, we must now queue up other
-    // steps that are waiting for resources.
     if (s.max_rss != 0) {
-        var dispatch_deps: std.ArrayList(*Step) = .empty;
-        defer dispatch_deps.deinit(gpa);
+        var dispatch_set: std.ArrayList(*Step) = .empty;
+        defer dispatch_set.deinit(gpa);
 
+        // Release our RSS claim and kick off some blocked steps if possible. We use `dispatch_set`
+        // as a staging buffer to avoid recursing into `makeStep` while `run.max_rss_mutex` is held.
         {
-            run.max_rss_mutex.lockUncancelable(io);
+            try run.max_rss_mutex.lock(io);
             defer run.max_rss_mutex.unlock(io);
-
-            dispatch_deps.ensureUnusedCapacity(gpa, run.memory_blocked_steps.items.len) catch @panic("OOM");
-
-            // Give the memory back to the scheduler.
-            run.claimed_rss -= s.max_rss;
-            // Avoid kicking off too many tasks that we already know will not have
-            // enough resources.
-            var remaining = run.max_rss - run.claimed_rss;
-            var i: usize = 0;
-            for (run.memory_blocked_steps.items) |dep| {
-                assert(dep.max_rss != 0);
-                if (dep.max_rss <= remaining) {
-                    remaining -= dep.max_rss;
-                    dispatch_deps.appendAssumeCapacity(dep);
-                } else {
-                    run.memory_blocked_steps.items[i] = dep;
-                    i += 1;
-                }
+            run.available_rss += s.max_rss;
+            dispatch_set.ensureUnusedCapacity(gpa, run.memory_blocked_steps.items.len) catch @panic("OOM");
+            while (run.memory_blocked_steps.getLastOrNull()) |candidate| {
+                if (run.available_rss < candidate.max_rss) break;
+                assert(run.memory_blocked_steps.pop() == candidate);
+                dispatch_set.appendAssumeCapacity(candidate);
             }
-            run.memory_blocked_steps.shrinkRetainingCapacity(i);
         }
-        for (dispatch_deps.items) |dep| {
-            // Must be called without max_rss_mutex held in case it executes recursively.
-            group.async(io, workerMakeOneStep, .{ group, b, dep, prog_node, run });
+        for (dispatch_set.items) |candidate| {
+            group.async(io, makeStep, .{ group, b, candidate, root_prog_node, run });
         }
     }
+
+    for (s.dependants.items) |dependant| {
+        // `.acq_rel` synchronizes with itself to ensure all dependencies' final states are visible when this hits 0.
+        if (@atomicRmw(u32, &dependant.pending_deps, .Sub, 1, .acq_rel) == 1) {
+            try stepReady(group, b, dependant, root_prog_node, run);
+        }
+    }
+}
+
+fn stepReady(
+    group: *Io.Group,
+    b: *std.Build,
+    s: *Step,
+    root_prog_node: std.Progress.Node,
+    run: *Run,
+) !void {
+    const io = b.graph.io;
+    if (s.max_rss != 0) {
+        try run.max_rss_mutex.lock(io);
+        defer run.max_rss_mutex.unlock(io);
+        if (run.available_rss < s.max_rss) {
+            // Running this step right now could possibly exceed the allotted RSS.
+            run.memory_blocked_steps.append(run.gpa, s) catch @panic("OOM");
+            return;
+        }
+        run.available_rss -= s.max_rss;
+    }
+    group.async(io, makeStep, .{ group, b, s, root_prog_node, run });
 }
 
 pub fn printErrorMessages(
@@ -2003,4 +2001,15 @@ var stdout_writer_allocation: Io.File.Writer = undefined;
 fn initStdoutWriter(io: Io) *Writer {
     stdout_writer_allocation = Io.File.stdout().writerStreaming(io, &stdio_buffer_allocation);
     return &stdout_writer_allocation.interface;
+}
+
+fn cleanTmpFiles(io: Io, steps: []const *Step) void {
+    for (steps) |step| {
+        const wf = step.cast(std.Build.Step.WriteFile) orelse continue;
+        if (wf.mode != .tmp) continue;
+        const path = wf.generated_directory.path orelse continue;
+        Io.Dir.cwd().deleteTree(io, path) catch |err| {
+            std.log.warn("failed to delete {s}: {t}", .{ path, err });
+        };
+    }
 }
