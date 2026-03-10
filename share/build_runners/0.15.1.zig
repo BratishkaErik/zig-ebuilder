@@ -641,7 +641,9 @@ fn prepare(
                     const gop = system_libraries.getOrPutAssumeCapacity(lib.name);
                     const new_name: []u8 = b.fmt("(artifact) {s}", .{artifact.name});
                     if (gop.found_existing == false) {
-                        gop.value_ptr.* = @ptrCast(b.dupeStrings(&.{new_name}));
+                        const arr = gpa.alloc([]const u8, 1) catch @panic("OOM");
+                        arr[0] = new_name;
+                        gop.value_ptr.* = arr;
                     } else {
                         const old = gop.value_ptr.*;
                         var names: std.ArrayList([]const u8) = .fromOwnedSlice(old);
@@ -667,7 +669,9 @@ fn prepare(
                     const gop = system_libraries.getOrPutAssumeCapacity(lib.name);
                     const new_name = b.fmt("(module) {s}", .{module_name});
                     if (gop.found_existing == false) {
-                        gop.value_ptr.* = @ptrCast(b.dupeStrings(&.{new_name}));
+                        const arr = gpa.alloc([]const u8, 1) catch @panic("OOM");
+                        arr[0] = new_name;
+                        gop.value_ptr.* = arr;
                     } else {
                         const old = gop.value_ptr.*;
                         var names: std.ArrayList([]const u8) = .fromOwnedSlice(old);
