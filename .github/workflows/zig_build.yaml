@@ -33,3 +33,24 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
       - run: zig build
       - run: zig build test
+      - name: Test self-generation
+        shell: bash
+        run: |
+          EXE_PATH="./zig-out/bin/zig-ebuilder"
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            EXE_PATH="${EXE_PATH}.exe"
+          fi
+          $EXE_PATH build.zig --output-file zig-ebuilder-self.ebuild
+      - name: Upload ebuild artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ebuild-${{ matrix.os }}
+          path: zig-ebuilder-self.ebuild
+          retention-days: 7
+      - name: Add ebuild to summary
+        shell: bash
+        run: |
+          echo "## Generated Ebuild for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          cat zig-ebuilder-self.ebuild >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
