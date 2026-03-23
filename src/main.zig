@@ -15,6 +15,7 @@ const ZigProcess = @import("ZigProcess.zig");
 const location = @import("location.zig");
 const reporter = @import("reporter.zig");
 const setup = @import("setup.zig");
+const args_mod = @import("args.zig");
 
 const version: std.SemanticVersion = .{ .major = 0, .minor = 3, .patch = 0 };
 
@@ -91,154 +92,45 @@ pub fn main() !void {
     // For consistent output of "reuse lint" and "reuse spdx"
     try env_map.put("LC_ALL", "en_US.UTF-8");
 
-    var args = try std.process.argsWithAllocator(gpa);
-    defer args.deinit();
-
-    if (args.next()) |name| global.prog_name = name;
-
     const stdout_file = std.io.getStdOut();
     const stderr_file = std.io.getStdErr();
     const stdout = stdout_file.writer().any();
     const stderr = stderr_file.writer().any();
 
-    var zig_build_additional_args: [][:0]const u8 = &.{};
-    defer gpa.free(zig_build_additional_args);
+    var parsed_args = (try args_mod.parse(gpa, stderr)) orelse return;
+    defer parsed_args.deinit(gpa);
+
+    if (parsed_args.help) {
+        printHelp(stdout);
+        return;
+    }
+
+    global.prog_name = parsed_args.prog_name;
+    global.zig_executable = parsed_args.zig_executable;
+    global.fetch_mode = parsed_args.fetch_mode;
+
+    const zig_build_additional_args = parsed_args.zig_build_additional_args;
+    const optional_custom_template_path = parsed_args.optional_custom_template_path;
+    const file_name = parsed_args.project_path;
 
     const cwd: location.Dir = .cwd();
-    var optional_custom_template_path: ?[:0]const u8 = null;
-    var file_name: ?[:0]const u8 = null;
-
     var output_file: ?union(enum) {
         stdout,
         file: location.File,
-    } = null;
+    } = if (parsed_args.output_file_path) |path|
+        if (std.mem.eql(u8, path, "-"))
+            .stdout
+        else
+            .{ .file = cwd.createFile(gpa, path) catch |err| {
+                stderr.print("Error when creating output file '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
+                return;
+            } }
+    else
+        null;
     defer switch (output_file orelse .stdout) {
         .stdout => {},
         .file => |file| file.deinit(gpa),
     };
-
-    while (args.next()) |arg| {
-        // Generator options.
-        if (std.mem.eql(u8, arg, "--fetch")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --fetch option\n") catch {};
-                return;
-            };
-            const fetch_strategy = std.meta.stringToEnum(Dependencies.FetchMode, value) orelse {
-                stderr.print("Invalid fetch strategy '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: none, plain, hashed\n") catch {};
-                return;
-            };
-            global.fetch_mode = fetch_strategy;
-        } else if (std.mem.eql(u8, arg, "--template")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --template option\n") catch {};
-                return;
-            };
-
-            if (std.mem.eql(u8, value, "gentoo.ebuild")) {
-                // TODO change this when other distros are added.
-                optional_custom_template_path = null;
-            } else if (value.len > 0) {
-                optional_custom_template_path = value;
-            } else {
-                stderr.print("Invalid template '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: gentoo.ebuild, or provide non-empty path\n") catch {};
-            }
-        } else if (std.mem.eql(u8, arg, "--output-file")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --output-file option\n") catch {};
-                return;
-            };
-
-            output_file = if (std.mem.eql(u8, value, "-"))
-                .stdout
-            else
-                .{ .file = cwd.createFile(gpa, value) catch |err| {
-                    stderr.print("Error when creating output file '{s}': {s}\n", .{ value, @errorName(err) }) catch {};
-                    return;
-                } };
-        }
-        // Zig options.
-        else if (std.mem.eql(u8, arg, "--zig")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --zig option\n") catch {};
-                return;
-            };
-            global.zig_executable = if (value.len != 0) value else {
-                stderr.writeAll("Expected non-empty path after --zig option\n") catch {};
-                return;
-            };
-        } else if (std.mem.eql(u8, arg, "--zig-build-args")) {
-            var additional_args: std.ArrayListUnmanaged([:0]const u8) = .empty;
-            errdefer additional_args.deinit(gpa);
-            while (args.next()) |zig_build_arg| {
-                try additional_args.append(gpa, zig_build_arg);
-            }
-            if (additional_args.items.len == 0) {
-                stderr.print("Expected following args after \"{s}\"\n", .{arg}) catch {};
-                return;
-            }
-            zig_build_additional_args = try additional_args.toOwnedSlice(gpa);
-        }
-        // Logging options.
-        else if (std.mem.eql(u8, arg, "--log-level")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --log-level option\n") catch {};
-                return;
-            };
-            const level = std.meta.stringToEnum(@FieldType(Logger.Format, "level"), value) orelse {
-                stderr.print("Invalid log level '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: err, warn, info, debug\n") catch {};
-                return;
-            };
-            Logger.global_format.level = level;
-        } else if (std.mem.eql(u8, arg, "--log-time-format")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --log-time-format option\n") catch {};
-                return;
-            };
-            const time_format = std.meta.stringToEnum(@FieldType(Logger.Format, "time_format"), value) orelse {
-                stderr.print("Invalid log time format '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: none, time, day_time\n") catch {};
-                return;
-            };
-            Logger.global_format.time_format = time_format;
-        } else if (std.mem.eql(u8, arg, "--log-color")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --log-color option\n") catch {};
-                return;
-            };
-            const color = std.meta.stringToEnum(@FieldType(Logger.Format, "color"), value) orelse {
-                stderr.print("Invalid log color mode '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: auto, always, never\n") catch {};
-                return;
-            };
-            Logger.global_format.color = color;
-        } else if (std.mem.eql(u8, arg, "--log-src-location")) {
-            const value = args.next() orelse {
-                stderr.writeAll("Missing value for --log-src-location option\n") catch {};
-                return;
-            };
-            const src_location = std.meta.stringToEnum(@FieldType(Logger.Format, "src_location"), value) orelse {
-                stderr.print("Invalid log source location mode '{s}'\n", .{value}) catch {};
-                stderr.writeAll("Choose one of: always, never\n") catch {};
-                return;
-            };
-            Logger.global_format.src_location = src_location;
-        }
-        // General options.
-        else if (std.mem.eql(u8, arg, "--help")) {
-            printHelp(stdout);
-            return;
-        } else {
-            if (file_name) |previous_path| {
-                stderr.print("More than 1 projects specified at the same time: \"{s}\" and \"{s}\".", .{ previous_path, arg }) catch {};
-                return;
-            }
-            file_name = arg;
-        }
-    }
 
     var main_log: Logger = .{
         .shared = &.{ .scretch_pad = gpa },
@@ -576,4 +468,8 @@ pub fn main() !void {
         main_log.warn(@src(), "Note: it appears your project has Git commit dependencies that generator was unable to convert.", .{});
         main_log.warn(@src(), "Please host \"{s}\" somewhere and add it to SRC_URI.", .{tarball_tarball_path});
     }
+}
+
+test {
+    _ = @import("args.zig");
 }
