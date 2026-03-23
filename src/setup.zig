@@ -54,8 +54,9 @@ pub const Generator = struct {
         events.debug(@src(), "self_exe_dir = {s}", .{self_exe_dir_path});
 
         const cache_path = cache_path: {
+            // Try XDG_CACHE_HOME first (cross-platform override)
             if (env_map.get("XDG_CACHE_HOME")) |xdg_cache_home| xdg: {
-                // Pre spec, ${XDG_CACHE_HOME} must be set and non empty.
+                // Per spec, ${XDG_CACHE_HOME} must be set and non empty.
                 // And also be an absolute path.
                 if (xdg_cache_home.len == 0) {
                     events.err(@src(), "XDG_CACHE_HOME is set but content is empty, ignoring.", .{});
@@ -68,18 +69,54 @@ pub const Generator = struct {
                 break :cache_path try std.fs.path.join(allocator, &.{ xdg_cache_home, "zig-ebuilder" });
             }
 
-            const home = env_map.get("HOME") orelse {
-                events.err(@src(), "Neither XDG_CACHE_HOME nor HOME is set, aborting.", .{});
-                return error.CacheNotFound;
-            };
-            if (home.len == 0) {
-                events.err(@src(), "XDG_CACHE_HOME is not set, HOME is set but content empty, aborting.", .{});
-                return error.CacheNotFound;
-            } else if (!std.fs.path.isAbsolute(home)) {
-                events.err(@src(), "XDG_CACHE_HOME is not set, HOME is set but content is not an absolute path, aborting.", .{});
-                return error.CacheNotFound;
+            // Platform-specific cache directories
+            switch (@import("builtin").os.tag) {
+                .windows => {
+                    // Windows: use LOCALAPPDATA (typically C:\Users\<user>\AppData\Local)
+                    const local_app_data = env_map.get("LOCALAPPDATA") orelse {
+                        events.err(@src(), "LOCALAPPDATA is not set, aborting.", .{});
+                        return error.CacheNotFound;
+                    };
+                    if (local_app_data.len == 0) {
+                        events.err(@src(), "LOCALAPPDATA is set but content is empty, aborting.", .{});
+                        return error.CacheNotFound;
+                    } else if (!std.fs.path.isAbsolute(local_app_data)) {
+                        events.err(@src(), "LOCALAPPDATA is set but content is not an absolute path, aborting.", .{});
+                        return error.CacheNotFound;
+                    }
+                    break :cache_path try std.fs.path.join(allocator, &.{ local_app_data, "zig-ebuilder" });
+                },
+                .macos => {
+                    // macOS: use ~/Library/Caches
+                    const home = env_map.get("HOME") orelse {
+                        events.err(@src(), "HOME is not set, aborting.", .{});
+                        return error.CacheNotFound;
+                    };
+                    if (home.len == 0) {
+                        events.err(@src(), "HOME is set but content is empty, aborting.", .{});
+                        return error.CacheNotFound;
+                    } else if (!std.fs.path.isAbsolute(home)) {
+                        events.err(@src(), "HOME is set but content is not an absolute path, aborting.", .{});
+                        return error.CacheNotFound;
+                    }
+                    break :cache_path try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "zig-ebuilder" });
+                },
+                else => {
+                    // Linux/BSD/others: use ~/.cache (XDG default)
+                    const home = env_map.get("HOME") orelse {
+                        events.err(@src(), "Neither XDG_CACHE_HOME nor HOME is set, aborting.", .{});
+                        return error.CacheNotFound;
+                    };
+                    if (home.len == 0) {
+                        events.err(@src(), "XDG_CACHE_HOME is not set, HOME is set but content empty, aborting.", .{});
+                        return error.CacheNotFound;
+                    } else if (!std.fs.path.isAbsolute(home)) {
+                        events.err(@src(), "XDG_CACHE_HOME is not set, HOME is set but content is not an absolute path, aborting.", .{});
+                        return error.CacheNotFound;
+                    }
+                    break :cache_path try std.fs.path.join(allocator, &.{ home, ".cache", "zig-ebuilder" });
+                },
             }
-            break :cache_path try std.fs.path.join(allocator, &.{ home, ".cache", "zig-ebuilder" });
         };
         defer allocator.free(cache_path);
         std.debug.assert(std.fs.path.isAbsolute(cache_path));

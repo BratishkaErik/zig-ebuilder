@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2024 BratishkaErik
+#
+# SPDX-License-Identifier: 0BSD
+.mailmap
+renovate.json5
+LICENSES/
+share/build_runners/**/*
+!share/build_runners/0.15.2.zig
+!share/build_runners/Report.zig
