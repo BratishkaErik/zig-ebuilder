@@ -143,44 +143,31 @@ pub fn main() !void {
     defer setup_events.deinit();
 
     const initial_file_path: []const u8 = if (file_name) |path| blk: {
-        const stat = cwd.dir.statFile(path) catch |err| {
-            switch (err) {
-                error.FileNotFound => {
-                    setup_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
-                },
-                else => |e| {
-                    setup_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
-                },
+        var is_dir = false;
+        if (cwd.dir.openFile(path, .{})) |file| {
+            file.close();
+        } else |err| {
+            if (err == error.IsDir) {
+                is_dir = true;
+            } else {
+                switch (err) {
+                    error.FileNotFound => {
+                        setup_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
+                    },
+                    else => |e| {
+                        setup_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
+                    },
+                }
+                return err;
             }
-            return err;
-        };
+        }
 
-        switch (stat.kind) {
-            .file => {
-                setup_events.info(@src(), "\"{s}\" is a file, trying to open it...", .{path});
-                break :blk try gpa.dupe(u8, path);
-            },
-            .directory => {
-                setup_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
-                break :blk try std.fs.path.join(gpa, &.{ path, "build.zig" });
-            },
-            .sym_link => {
-                setup_events.err(@src(), "Can't resolve symlink \"{s}\".", .{path});
-                return error.FileNotFound;
-            },
-            //
-            .block_device,
-            .character_device,
-            .named_pipe,
-            .unix_domain_socket,
-            .whiteout,
-            .door,
-            .event_port,
-            .unknown,
-            => |tag| {
-                setup_events.err(@src(), "\"{s}\" is not a file or directory, but instead it's \"{s}\".", .{ path, @tagName(tag) });
-                return error.FileNotFound;
-            },
+        if (is_dir) {
+            setup_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
+            break :blk try std.fs.path.join(gpa, &.{ path, "build.zig" });
+        } else {
+            setup_events.info(@src(), "\"{s}\" is a file, trying to open it...", .{path});
+            break :blk try gpa.dupe(u8, path);
         }
     } else cwd: {
         setup_events.info(@src(), "No location given, trying to open \"build.zig\" in current directory...", .{});
