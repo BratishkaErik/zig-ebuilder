@@ -869,7 +869,6 @@ fn prepare(
 
         const conn = listen_address.connect(io, .{ .protocol = .tcp, .mode = .stream }) catch |err|
             std.debug.panic("Error when starting report client from \"zig build\" runner: {s}", .{@errorName(err)});
-        defer conn.close();
 
         var conn_buffer: [1024]u8 = undefined;
         var conn_writer = conn.writer(io, &conn_buffer);
@@ -881,6 +880,8 @@ fn prepare(
 
         writer.flush() catch |err|
             std.debug.panic("Error when writing JSON report from \"zig build\" runner: {s}", .{@errorName(err)});
+
+        conn.close();
 
         break :zig_ebuilder_section process.exit(0);
     };

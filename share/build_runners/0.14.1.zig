@@ -715,10 +715,11 @@ fn prepare(
 
         const conn = std.net.tcpConnectToAddress(listen_address) catch |err|
             std.debug.panic("Error when starting report client from \"zig build\" runner: {s}", .{@errorName(err)});
-        defer conn.close();
 
         conn.writer().print("{any}", .{std.json.fmt(report, .{ .whitespace = .minified })}) catch |err|
             std.debug.panic("Error when writing JSON report from \"zig build\" runner: {s}", .{@errorName(err)});
+
+        conn.close();
 
         break :zig_ebuilder_section cleanExit();
     };
