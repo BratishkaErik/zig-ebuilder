@@ -331,12 +331,12 @@ pub fn main() !void {
         const new_package_hash_format = zig_process.version.newPackageFormat();
 
         for (dependencies.packages) |package| {
-            const used = if (report.used_dependencies_hashes) |used_hashes| check_hash: {
-                for (used_hashes) |used_hash| {
+            const used = check_hash: {
+                for (report.used_dependencies_hashes) |used_hash| {
                     if (std.mem.eql(u8, package.hash, used_hash))
                         break :check_hash true;
                 } else break :check_hash false;
-            } else true; // Not supported by 0.13
+            };
             // TODO need some mechanism for "zig.eclass" maybe?
             // so that we can make conditional deps here.
             // For now all dependencies are assumed as used.

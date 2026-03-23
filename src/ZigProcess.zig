@@ -26,7 +26,7 @@ pub const Version = struct {
 
     /// Oldest Zig version supported by zig-ebuild.eclass
     /// TODO maybe packages of other distros too? Not only ebuilds
-    const oldest_supported: std.SemanticVersion = .{ .major = 0, .minor = 13, .patch = 0 };
+    const oldest_supported: std.SemanticVersion = .{ .major = 0, .minor = 14, .patch = 0 };
 
     fn parse(raw_string: []const u8) error{ InvalidVersion, Overflow, VersionTooOld }!ZigProcess.Version {
         const sem_ver: std.SemanticVersion = try .parse(raw_string);
