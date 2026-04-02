@@ -143,26 +143,22 @@ pub fn main() !void {
     defer setup_events.deinit();
 
     const initial_file_path: []const u8 = if (file_name) |path| blk: {
-        var is_dir = false;
-        if (cwd.dir.openFile(path, .{})) |file| {
-            file.close();
-        } else |err| {
-            if (err == error.IsDir) {
-                is_dir = true;
-            } else {
-                switch (err) {
-                    error.FileNotFound => {
-                        setup_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
-                    },
-                    else => |e| {
-                        setup_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
-                    },
-                }
+        const stat = cwd.dir.statFile(path) catch |err| switch (err) {
+            error.IsDir => {
+                setup_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
+                break :blk try std.fs.path.join(gpa, &.{ path, "build.zig" });
+            },
+            error.FileNotFound => {
+                setup_events.err(@src(), "File or directory \"{s}\" not found.", .{path});
                 return err;
-            }
-        }
+            },
+            else => |e| {
+                setup_events.err(@src(), "Error when checking type of \"{s}\": {s}.", .{ path, @errorName(e) });
+                return e;
+            },
+        };
 
-        if (is_dir) {
+        if (stat.kind == .directory) {
             setup_events.info(@src(), "\"{s}\" is a directory, trying to find \"build.zig\" file inside...", .{path});
             break :blk try std.fs.path.join(gpa, &.{ path, "build.zig" });
         } else {
