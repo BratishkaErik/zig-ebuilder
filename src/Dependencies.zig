@@ -111,12 +111,43 @@ pub fn collect(
                         return error.FetchFailed;
                     }
 
+                    const hash = std.mem.trim(u8, result_of_fetch.stdout, &std.ascii.whitespace);
+
+                    // Zig 0.16+: folder packages land in cwd/zig-pkg/<hash>/.
+                    // Copy them into generator_setup.packages (<cache>/deps/p/<hash>/)
+                    // so the rest of the code can find them in one consistent place.
+                    const is_0_16_or_later: bool = switch (zig_process.version.kind) {
+                        .live => true,
+                        .release => zig_process.version.sem_ver.order(
+                            .{ .major = 0, .minor = 16, .patch = 0 },
+                        ).compare(.gte),
+                    };
+                    if (is_0_16_or_later) {
+                        var zig_pkg_dir = cwd.dir.openDir("zig-pkg", .{}) catch |err| {
+                            file_events.err(@src(), "zig-pkg dir not found after fetch (expected): {s}", .{@errorName(err)});
+                            return error.FetchFailed;
+                        };
+                        defer zig_pkg_dir.close();
+
+                        var src_pkg = zig_pkg_dir.openDir(hash, .{ .iterate = true }) catch |err| {
+                            file_events.err(@src(), "Package dir zig-pkg/{s}/ not found: {s}", .{ hash, @errorName(err) });
+                            return error.FetchFailed;
+                        };
+                        defer src_pkg.close();
+
+                        try generator_setup.packages.dir.makePath(hash);
+                        var dst_pkg = try generator_setup.packages.dir.openDir(hash, .{});
+                        defer dst_pkg.close();
+
+                        try copyDir(arena, src_pkg, dst_pkg);
+                    }
+
                     all_paths.appendAssumeCapacity(.{
                         .name = key,
                         .storage = .{
                             .remote = .{
                                 .uri = uri,
-                                .hash = std.mem.trim(u8, result_of_fetch.stdout, &std.ascii.whitespace),
+                                .hash = hash,
                             },
                         },
                     });
@@ -330,4 +361,21 @@ pub fn pack_git_commits_to_tarball_tarball(
     const tar_reader = tar_fbs.reader();
     events.warn(@src(), "Compressing all into tarball-tarball...", .{});
     try std.compress.gzip.compress(tar_reader, writer, .{ .level = compression_level });
+}
+
+fn copyDir(allocator: std.mem.Allocator, src: std.fs.Dir, dst: std.fs.Dir) !void {
+    var walker = try src.walk(allocator);
+    defer walker.deinit();
+    while (try walker.next()) |entry| {
+        switch (entry.kind) {
+            .directory => try dst.makePath(entry.path),
+            .file => {
+                // makePath for parent in case walker visits file before dir
+                if (std.fs.path.dirname(entry.path)) |parent|
+                    try dst.makePath(parent);
+                try src.copyFile(entry.path, dst, entry.path, .{});
+            },
+            else => {},
+        }
+    }
 }

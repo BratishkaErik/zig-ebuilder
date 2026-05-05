@@ -122,18 +122,42 @@ pub fn fetch(
     },
     events: Logger,
 ) std.process.Child.RunError!std.process.Child.RunResult {
+    const is_0_16_or_later: bool = switch (self.version.kind) {
+        .live => true,
+        .release => self.version.sem_ver.order(
+            .{ .major = 0, .minor = 16, .patch = 0 },
+        ).compare(.gte),
+    };
+
+    // Zig 0.16 regression: zig fetch panics if build.zig doesn't exist.
+    // It's a no-op for 0.17+ (fixed upstream) but safe to do unconditionally.
+    if (is_0_16_or_later) touch: {
+        cwd.dir.access("build.zig", .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                const f = cwd.dir.createFile("build.zig", .{}) catch break :touch;
+                f.close();
+            }
+        };
+    }
+
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(allocator);
+
     try argv.appendSlice(allocator, &.{
         self.exe,
         "fetch",
-        "--global-cache-dir",
-        args.storage_loc.string,
-        switch (args.resource.storage) {
-            .remote => |remote| remote.url,
-            .local => |local| local.path,
-        },
     });
+    if (!is_0_16_or_later) {
+        try argv.appendSlice(allocator, &.{
+            "--global-cache-dir",
+            args.storage_loc.string,
+        });
+    }
+    try argv.append(allocator, switch (args.resource.storage) {
+        .remote => |remote| remote.url,
+        .local => |local| local.path,
+    });
+
     switch (args.fetch_mode) {
         .hashed => switch (args.resource.storage) {
             .remote => |remote| try argv.append(allocator, remote.hash),
@@ -175,9 +199,9 @@ pub fn build(
         args.build_runner_path,
         "--system",
         args.packages_loc.string,
-            // TODO is it truly needed? sorting JSON values works for now
-            // "--seed",
-            // "1",
+        // TODO is it truly needed? sorting JSON values works for now
+        // "--seed",
+        // "1",
     });
     try argv.appendSlice(allocator, args.additional);
 

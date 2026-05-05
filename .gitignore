@@ -3,3 +3,4 @@
 # SPDX-License-Identifier: 0BSD
 .zig-cache/
 zig-out/
+zig-pkg/
