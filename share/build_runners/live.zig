@@ -335,8 +335,6 @@ pub fn main(init: process.Init.Minimal) !void {
                 builder.verbose_llvm_ir = arg["--verbose-llvm-ir=".len..];
             } else if (mem.startsWith(u8, arg, "--verbose-llvm-bc=")) {
                 builder.verbose_llvm_bc = arg["--verbose-llvm-bc=".len..];
-            } else if (mem.eql(u8, arg, "--verbose-cimport")) {
-                builder.verbose_cimport = true;
             } else if (mem.eql(u8, arg, "--verbose-cc")) {
                 builder.verbose_cc = true;
             } else if (mem.eql(u8, arg, "--verbose-llvm-cpu-features")) {
@@ -426,6 +424,7 @@ pub fn main(init: process.Init.Minimal) !void {
                     fatal("unable to parse jobs count '{s}': {t}", .{ text, err });
                 if (n < 1) fatal("number of jobs must be at least 1", .{});
                 threaded.setAsyncLimit(.limited(n));
+                graph.max_jobs = n;
             } else if (mem.eql(u8, arg, "--")) {
                 builder.args = argsRest(args, arg_idx);
                 break;
@@ -534,7 +533,7 @@ pub fn main(init: process.Init.Minimal) !void {
     }
 
     prepare(arena, builder, targets.items, &run, graph.random_seed) catch |err| switch (err) {
-        error.DependencyLoopDetected => {
+        error.DependencyLoopDetected, error.InsufficientMemory => {
             // Perhaps in the future there could be an Advanced Options flag
             // such as --debug-build-runner-leaks which would make this code
             // return instead of calling exit.
@@ -698,8 +697,8 @@ fn prepare(
         for (0..step_names.len) |i| {
             const step_name = step_names[step_names.len - i - 1];
             const s = b.top_level_steps.get(step_name) orelse {
-                std.debug.print("no step named '{s}'\n  access the help menu with 'zig build -h'\n", .{step_name});
-                process.exit(1);
+                std.log.info("access the help menu with \"zig build -h\"", .{});
+                fatal("no step named '{s}'", .{step_name});
             };
             step_stack.putAssumeCapacity(&s.step, {});
         }
@@ -715,8 +714,39 @@ fn prepare(
         try constructGraphAndCheckForDependencyLoop(gpa, b, s, &run.step_stack, rand);
     }
 
+    {
+        // Check that we have enough memory to complete the build.
+        var any_problems = false;
+        var max_needed: usize = 0;
+        for (step_stack.keys()) |s| {
+            if (s.max_rss == 0) continue;
+            max_needed = @max(max_needed, s.max_rss);
+            if (s.max_rss > run.available_rss) {
+                if (run.skip_oom_steps) {
+                    s.state = .skipped_oom;
+                    for (s.dependants.items) |dependant| {
+                        dependant.pending_deps -= 1;
+                    }
+                } else {
+                    std.log.err("{s}{s}: this step declares an upper bound of {d} bytes of memory, exceeding the available {d} bytes of memory", .{
+                        s.owner.dep_prefix, s.name, s.max_rss, run.available_rss,
+                    });
+                    any_problems = true;
+                }
+            }
+        }
+        if (any_problems) {
+            if (run.max_rss_is_default) {
+                std.log.info("use --maxrss {d} to proceed, risking system memory exhaustion", .{
+                    max_needed,
+                });
+            }
+            return error.InsufficientMemory;
+        }
+    }
+
     // Just to make diff'ing easier.
-    // Synced with Zig build runner, version "0.16.0-dev.2738+cfe5c88ad".
+    // Synced with Zig build runner, version "0.17.0-dev.261+3d1fb4fac".
     if (true) return zig_ebuilder_section: {
         const Report = @import("Report.zig");
 
@@ -881,36 +911,10 @@ fn prepare(
         writer.flush() catch |err|
             std.debug.panic("Error when writing JSON report from \"zig build\" runner: {s}", .{@errorName(err)});
 
-        conn.close();
+        conn.close(io);
 
         break :zig_ebuilder_section process.exit(0);
     };
-
-    {
-        // Check that we have enough memory to complete the build.
-        var any_problems = false;
-        for (step_stack.keys()) |s| {
-            if (s.max_rss == 0) continue;
-            if (s.max_rss > run.available_rss) {
-                if (run.skip_oom_steps) {
-                    s.state = .skipped_oom;
-                    for (s.dependants.items) |dependant| {
-                        dependant.pending_deps -= 1;
-                    }
-                } else {
-                    std.debug.print("{s}{s}: this step declares an upper bound of {d} bytes of memory, exceeding the available {d} bytes of memory\n", .{
-                        s.owner.dep_prefix, s.name, s.max_rss, run.available_rss,
-                    });
-                    any_problems = true;
-                }
-            }
-        }
-        if (any_problems) {
-            if (run.max_rss_is_default) {
-                std.debug.print("note: use --maxrss to override the default", .{});
-            }
-        }
-    }
 }
 
 fn runStepNames(
@@ -1566,7 +1570,7 @@ fn makeStep(
             defer run.max_rss_mutex.unlock(io);
             run.available_rss += s.max_rss;
             dispatch_set.ensureUnusedCapacity(gpa, run.memory_blocked_steps.items.len) catch @panic("OOM");
-            while (run.memory_blocked_steps.getLastOrNull()) |candidate| {
+            while (run.memory_blocked_steps.getLast()) |candidate| {
                 if (run.available_rss < candidate.max_rss) break;
                 assert(run.memory_blocked_steps.pop() == candidate);
                 dispatch_set.appendAssumeCapacity(candidate);
@@ -1726,7 +1730,7 @@ fn printUsage(b: *std.Build, w: *Writer) !void {
             const name = try fmt.allocPrint(arena, "  -D{s}=[{t}]", .{ option.name, option.type_id });
             try w.print("{s:<30} {s}\n", .{ name, option.description });
             if (option.enum_options) |enum_options| {
-                const padding = " " ** 33;
+                const padding: [33]u8 = @splat(' ');
                 try w.writeAll(padding ++ "Supported Values:\n");
                 for (enum_options) |enum_option| {
                     try w.print(padding ++ "  {s}\n", .{enum_option});
